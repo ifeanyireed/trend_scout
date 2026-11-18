@@ -1,5 +1,5 @@
-const DEFAULT_API_BASE = 'https://trendscout.vercel.app';
-const DEFAULT_DASHBOARD_BASE = 'https://trendscout.vercel.app';
+const DEFAULT_API_BASE = 'https://trendscout-api.vercel.app';
+const DEFAULT_DASHBOARD_BASE = 'https://trendscout-iota.vercel.app';
 
 chrome.runtime.onInstalled.addListener(async () => {
   const stored = await chrome.storage.local.get(['apiBaseUrl', 'dashboardBaseUrl', 'notificationsEnabled', 'seenNotificationIds']);

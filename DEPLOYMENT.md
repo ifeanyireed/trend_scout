@@ -25,7 +25,7 @@ All secrets are stored strictly server-side:
 - `DATABASE_URL=postgresql://...` (Neon Cloud PostgreSQL 18)
 - `JWT_SECRET=<server-secret>`
 - `STORAGE_DIR=./storage`
-- `DASHBOARD_URL=https://your-trendscout.vercel.app`
+- `DASHBOARD_URL=https://trendscout-iota.vercel.app`
 - `GEMINI_API_KEY=<gemini-api-key>`
 - `GEMINI_MODEL=gemini-3.8-flash`
 - `YOUTUBE_API_KEY=` (Optional: upgrades YouTube RSS/public feed connector to full Data API v3 quota)
@@ -37,7 +37,9 @@ All secrets are stored strictly server-side:
    - Push or import this repository to Vercel.
    - Vercel automatically detects `vercel.json` and builds the Vite frontend from `web/` to `web/dist`.
    - In your Vercel Project Settings -> Environment Variables, add:
-     - `VITE_API_BASE_URL`: The URL of your cloud backend API (e.g. `https://your-trendscout-api.up.railway.app` or your cloud server).
+     - `VITE_API_BASE_URL`: The URL of your cloud backend API (`https://trendscout-api.vercel.app`).
 2. **Chrome Extension**:
    - In Chrome, open `chrome://extensions` and click **Options** on TrendScout Studio.
-   - Enter your Vercel deployment URL (e.g. `https://your-trendscout.vercel.app`) as the **Web Studio Dashboard URL** and **Cloud Backend API URL**.
+   - Defaults are preconfigured to:
+     - **Web Studio Dashboard URL**: `https://trendscout-iota.vercel.app`
+     - **Cloud Backend API URL**: `https://trendscout-api.vercel.app`

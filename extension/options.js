@@ -1,7 +1,7 @@
 document.addEventListener('DOMContentLoaded', async () => {
   const stored = await chrome.storage.local.get(['apiBaseUrl', 'dashboardBaseUrl', 'notificationsEnabled']);
-  document.getElementById('apiBaseUrl').value = stored.apiBaseUrl || 'https://trendscout.vercel.app';
-  document.getElementById('dashboardBaseUrl').value = stored.dashboardBaseUrl || 'https://trendscout.vercel.app';
+  document.getElementById('apiBaseUrl').value = stored.apiBaseUrl || 'https://trendscout-api.vercel.app';
+  document.getElementById('dashboardBaseUrl').value = stored.dashboardBaseUrl || 'https://trendscout-iota.vercel.app';
   document.getElementById('notificationsEnabled').checked = stored.notificationsEnabled !== false;
 
   document.getElementById('saveBtn').addEventListener('click', async () => {

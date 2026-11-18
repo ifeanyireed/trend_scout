@@ -1,5 +1,5 @@
-const DEFAULT_API = 'https://trendscout.vercel.app';
-const DEFAULT_DASH = 'https://trendscout.vercel.app';
+const DEFAULT_API = 'https://trendscout-api.vercel.app';
+const DEFAULT_DASH = 'https://trendscout-iota.vercel.app';
 
 async function getConfig() {
   const stored = await chrome.storage.local.get(['apiBaseUrl', 'dashboardBaseUrl', 'authToken', 'userEmail']);

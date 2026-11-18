@@ -1233,7 +1233,7 @@ func DispatchNotification(
 	}
 	dashURL := strings.TrimRight(os.Getenv("DASHBOARD_URL"), "/")
 	if dashURL == "" {
-		dashURL = "https://trendscout.vercel.app"
+		dashURL = "https://trendscout-iota.vercel.app"
 	}
 
 	// Write persistent local email record in storage/emails for auditability
