@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: 'Dropa';
+  src: url('/fonts/Dropa-Regular.woff2') format('woff2'),
+       url('/fonts/Dropa-Regular.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+
+:root {
+  --font-dropa: 'Dropa';
+
+  /* TYPOGRAPHY SCALE */
+  --fs-xs: 12px;
+  --fs-sm: 14px;
+  --fs-base: 16px;
+  --fs-md: 18px;
+  --fs-lg: 24px;
+  --fs-xl: 32px;
+  --fs-2xl: 40px;
+  --fs-3xl: 56px;
+
+  /* BORDER RADIUS SYSTEM */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-2xl: 32px;
+  --r-full: 9999px;
+
+  /* LIGHT MODE TOKENS — OFIA_NG RED THEME PRIMARY */
+  --nexa-bg-base: #F8F9FC;
+  --nexa-bg-surface: #FFFFFF;
+  --nexa-bg-overlay: rgba(255, 255, 255, 0.85);
+  --nexa-bg-glass: rgba(255, 255, 255, 0.70);
+
+  --nexa-brand: #E02424;
+  --nexa-brand-light: #FEF2F2;
+  --nexa-brand-mid: #DC2626;
+  --nexa-brand-glow: rgba(224, 36, 36, 0.22);
+
+  --nexa-accent: #0E9F6E;
+  --nexa-accent-light: #ECFDF5;
+
+  --nexa-amber: #C88A3A;
+  --nexa-amber-light: #FFFBEB;
+  --nexa-coral: #E02424;
+  --nexa-coral-light: #FEF2F2;
+
+  --nexa-text-primary: #111928;
+  --nexa-text-secondary: #374151;
+  --nexa-text-muted: #6B7280;
+  --nexa-text-faint: #9CA3AF;
+
+  --nexa-border: rgba(0, 0, 0, 0.09);
+  --nexa-border-mid: rgba(0, 0, 0, 0.15);
+
+  --nexa-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.04);
+  --nexa-shadow-md: 0 2px 6px rgba(0, 0, 0, 0.05), 0 10px 24px rgba(0, 0, 0, 0.05);
+  --nexa-shadow-glass: 0 5px 20px rgba(0, 0, 0, 0.06), 0 15px 40px rgba(0, 0, 0, 0.08);
+
+  --glass-border: rgba(255, 255, 255, 0.7);
+  --glass-border-top: rgba(255, 255, 255, 0.9);
+}
+
+.dark {
+  --nexa-bg-base: #0B0F19;
+  --nexa-bg-surface: #111827;
+  --nexa-bg-overlay: rgba(17, 24, 39, 0.90);
+  --nexa-bg-glass: rgba(17, 24, 39, 0.75);
+
+  --nexa-brand: #E02424;
+  --nexa-brand-light: rgba(224, 36, 36, 0.18);
+  --nexa-brand-mid: #EF4444;
+  --nexa-brand-glow: rgba(224, 36, 36, 0.30);
+
+  --nexa-accent: #0E9F6E;
+  --nexa-accent-light: rgba(14, 159, 110, 0.18);
+
+  --nexa-amber: #D97706;
+  --nexa-amber-light: rgba(217, 119, 6, 0.18);
+  --nexa-coral: #E02424;
+  --nexa-coral-light: rgba(224, 36, 36, 0.18);
+
+  --nexa-text-primary: #F9FAFB;
+  --nexa-text-secondary: #D1D5DB;
+  --nexa-text-muted: #9CA3AF;
+  --nexa-text-faint: #6B7280;
+
+  --nexa-border: rgba(255, 255, 255, 0.10);
+  --nexa-border-mid: rgba(255, 255, 255, 0.18);
+
+  --nexa-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --nexa-shadow-md: 0 4px 14px rgba(0, 0, 0, 0.6);
+  --nexa-shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.75);
+
+  --glass-border: rgba(255, 255, 255, 0.10);
+  --glass-border-top: rgba(255, 255, 255, 0.18);
+}
+
+*, *::before, *::after, html, body, input, textarea, select, button, pre, code {
+  font-family: 'Dropa' !important;
+}
+
+html {
+  font-size: 17px;
+  font-family: 'Dropa';
+}
+
+body {
+  background: var(--nexa-bg-base);
+  color: var(--nexa-text-primary);
+  font-family: 'Dropa';
+  font-weight: 300;
+  letter-spacing: -0.022em;
+  font-size: var(--fs-base);
+  line-height: 1.45;
+  transition: background 250ms ease, color 250ms ease;
+  position: relative;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+
+/* OFIA_NG LIQUID GLASS & NEXA DESIGN SYSTEM (RED EDITION) */
+.liquid-glass {
+  background-color: var(--nexa-bg-glass);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 0.5px solid var(--glass-border);
+  border-top: 0.5px solid var(--glass-border-top);
+  box-shadow:
+    var(--nexa-shadow-glass),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.2);
+  position: relative;
+}
+
+.dark .liquid-glass {
+  box-shadow:
+    var(--nexa-shadow-glass),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+
+.nexa-card {
+  background-color: var(--nexa-bg-surface);
+  border: 1px solid var(--nexa-border);
+  border-radius: 1.5rem;
+  box-shadow: var(--nexa-shadow-sm);
+  transition: all 0.22s ease;
+}
+
+.nexa-card-interactive:hover {
+  border-color: rgba(224, 36, 36, 0.45);
+  box-shadow: var(--nexa-shadow-md);
+  transform: translateY(-2px);
+}
+
+.text-display {
+  font-family: 'Dropa';
+  letter-spacing: -0.045em;
+  font-weight: 700;
+}
+
+.text-mono {
+  font-family: 'Dropa';
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

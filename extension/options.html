@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>TrendScout Extension Settings</title>
+  <style>
+    @font-face {
+      font-family: 'Dropa';
+      src: url('fonts/Dropa-Regular.woff2') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: block;
+    }
+    *, *::before, *::after, html, body, button, input {
+      box-sizing: border-box;
+      font-family: 'Dropa' !important;
+    }
+    body {
+      background: #F8F9FC;
+      color: #111928;
+      padding: 36px;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    .card {
+      background: #FFFFFF;
+      border: 1px solid rgba(0, 0, 0, 0.09);
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+    }
+    h1 { font-size: 21px; font-weight: 900; letter-spacing: -0.04em; margin-bottom: 6px; }
+    p { font-size: 13px; color: #374151; margin-bottom: 20px; line-height: 1.5; }
+    label { display: block; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: #6B7280; margin-top: 16px; margin-bottom: 6px; }
+    input[type="text"] {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      border-radius: 14px;
+      font-size: 13px;
+    }
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 16px;
+      font-size: 13px;
+      color: #374151;
+    }
+    button {
+      margin-top: 22px;
+      background: #E02424;
+      border: none;
+      color: #FFFFFF;
+      font-weight: 800;
+      padding: 11px 22px;
+      border-radius: 999px;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(224, 36, 36, 0.25);
+    }
+    #statusMsg { margin-left: 12px; font-size: 12px; color: #0E9F6E; font-weight: 800; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>TrendScout Studio — Chrome Extension Settings</h1>
+    <p>Configure connection endpoints and Chrome desktop alert preferences. Cloud monitoring continues in the Go + PostgreSQL backend even when Chrome is closed.</p>
+
+    <label>Cloud Backend API URL</label>
+    <input id="apiBaseUrl" type="text" value="https://trendscout.vercel.app" placeholder="https://trendscout.vercel.app" />
+
+    <label>Web Studio Dashboard URL</label>
+    <input id="dashboardBaseUrl" type="text" value="https://trendscout.vercel.app" placeholder="https://trendscout.vercel.app" />
+
+    <div class="check-row">
+      <input id="notificationsEnabled" type="checkbox" checked />
+      <span>Enable Chrome Desktop Notifications for new underdog opportunities, accelerating trends &amp; completed scripts</span>
+    </div>
+
+    <div>
+      <button id="saveBtn">Save Preferences</button>
+      <span id="statusMsg"></span>
+    </div>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "trendscout-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TrendScout Studio — Chrome Extension + Web Dashboard + Go & PostgreSQL Cloud AI Documentary Discovery & Production System",
+  "scripts": {
+    "dev:backend": "cd backend && go run ./cmd/server",
+    "dev:web": "npm --prefix web run dev",
+    "build:backend": "cd backend && go build -o ../storage/trendscout-server ./cmd/server",
+    "build:web": "npm --prefix web run build",
+    "build:extension": "node scripts/package-extension.mjs",
+    "build": "npm run build:backend && npm run build:web && npm run build:extension",
+    "start": "cd backend && go run ./cmd/server",
+    "test": "cd backend && go test -v ./..."
+  }
+}

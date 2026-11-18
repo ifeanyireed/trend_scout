@@ -1,0 +1,57 @@
+# Secrets & Environment variables
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+*/node_modules/
+web/node_modules/
+vendor/
+
+# Binaries & Builds
+dist/
+web/dist/
+storage/trendscout-server
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Storage & Generated Media (keep directory structure with .gitkeep)
+storage/images/*
+storage/audio/*
+storage/subtitles/*
+storage/exports/*
+storage/characters/*
+storage/emails/*
+!storage/images/.gitkeep
+!storage/audio/.gitkeep
+!storage/subtitles/.gitkeep
+!storage/exports/.gitkeep
+!storage/characters/.gitkeep
+!storage/emails/.gitkeep
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & Editor Configs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
