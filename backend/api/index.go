@@ -51,6 +51,14 @@ func initServerless() {
 func Handler(w http.ResponseWriter, r *http.Request) {
 	initOnce.Do(initServerless)
 	if appMux != nil {
+		// Restore original URL path if Vercel internal rewrite changed it to /api/index.go
+		if r.URL.Path == "/api/index.go" || r.URL.Path == "/api/index" {
+			if orig := r.Header.Get("x-forwarded-uri"); orig != "" {
+				r.URL.Path = orig
+			} else if matched := r.Header.Get("x-matched-path"); matched != "" {
+				r.URL.Path = matched
+			}
+		}
 		appMux.ServeHTTP(w, r)
 	} else {
 		http.Error(w, `{"error":"Backend initialization failed"}`, http.StatusInternalServerError)
