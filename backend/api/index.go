@@ -41,7 +41,7 @@ func initServerless() {
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"online","platform":"vercel-serverless","service":"trendscout-backend"}`))
+		_, _ = w.Write([]byte(`{"status":"online","service":"trendscout-studio"}`))
 	})
 
 	appMux = corsMiddleware(mux)

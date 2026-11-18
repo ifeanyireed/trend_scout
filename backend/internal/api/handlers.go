@@ -898,8 +898,8 @@ func RegisterRoutes(mux *http.ServeMux) {
 
 		writeJSON(w, 200, map[string]any{
 			"status":     "healthy",
-			"database":   "PostgreSQL 18 (Neon Cloud Connected)",
-			"runtime":    "Go 1.26 Cloud Autonomous Engine",
+			"database":   "Cloud Engine Active",
+			"runtime":    "Autonomous Cloud Engine",
 			"connectors": sources,
 			"jobs":       jobs,
 		})

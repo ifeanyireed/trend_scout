@@ -191,7 +191,7 @@ export const SettingsPage: React.FC = () => {
           className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-nexa-brand/25 cursor-pointer"
         >
           <Save className="w-4 h-4" />
-          {saved ? 'Saved to PostgreSQL!' : 'Save All Settings'}
+          {saved ? 'Settings Saved!' : 'Save All Settings'}
         </button>
       </div>
 
@@ -352,7 +352,7 @@ export const SystemHealthPage: React.FC = () => {
             System Health, Connectors & Persistent Job Queue
           </h1>
           <p className="text-xs text-nexa-text-secondary mt-1">
-            Runtime: {health.runtime} • Database: {health.database}
+            Status: {health.runtime} • {health.database}
           </p>
         </div>
         <button
@@ -387,7 +387,7 @@ export const SystemHealthPage: React.FC = () => {
 
       <div className="nexa-card rounded-3xl p-6">
         <h2 className="text-base font-black text-display text-nexa-text-primary mb-4">
-          Persistent Background Jobs (`background_jobs` in PostgreSQL)
+          Automated Background Tasks &amp; Discovery Queue
         </h2>
         <div className="space-y-2.5">
           {(health.jobs || []).map((j: any) => (

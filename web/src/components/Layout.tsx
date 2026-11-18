@@ -78,7 +78,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 PRODUCER
               </span>
             </div>
-            <div className="text-[9px] font-bold text-nexa-text-muted">Go + PostgreSQL 18 Cloud</div>
+            <div className="text-[9px] font-bold text-nexa-text-muted">Cloud Studio Online</div>
           </div>
         </div>
 
@@ -132,7 +132,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                   DOCUMENTARY OS
                 </span>
                 <span className="text-[9px] font-bold text-nexa-text-muted uppercase tracking-wider">
-                  Go + PostgreSQL 18
+                  Cloud Platform Active
                 </span>
               </div>
             </div>

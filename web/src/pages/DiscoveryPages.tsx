@@ -124,7 +124,7 @@ export const DashboardPage: React.FC = () => {
   if (!data) {
     return (
       <div className="p-8 text-sm text-nexa-text-muted font-bold">
-        Loading TrendScout Studio telemetry from PostgreSQL 18...
+        Loading TrendScout Studio intelligence...
       </div>
     );
   }
@@ -173,7 +173,7 @@ export const DashboardPage: React.FC = () => {
             TrendScout Master Intelligence Hub
           </h1>
           <p className="text-xs text-nexa-text-secondary mt-1">
-            Go 1.26 Autonomous Cloud Engine • PostgreSQL 18 • Last Scan:{' '}
+            Real-Time Autonomous Discovery Engine • Last Scan:{' '}
             <span className="font-bold text-nexa-brand">
               {data.monitoringStatus?.lastScanAt
                 ? new Date(data.monitoringStatus.lastScanAt).toLocaleString()
