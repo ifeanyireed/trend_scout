@@ -21,8 +21,11 @@ func LoadEnvFile() {
 		".env",
 		"../.env",
 		"../../.env",
+		"../../../.env",
 		filepath.Join(cwd, ".env"),
 		filepath.Join(cwd, "..", ".env"),
+		filepath.Join(cwd, "..", "..", ".env"),
+		filepath.Join(cwd, "..", "..", "..", ".env"),
 	}
 	for _, p := range candidates {
 		data, err := os.ReadFile(p)

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"trendscout-backend/internal/agents"
 	"trendscout-backend/internal/api"
@@ -162,11 +164,12 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 	}
 
 	// 6. Test Persistent Cloud Queue Idempotency & Execution
-	j1, err := queue.EnqueueJob(ctx, "trend_monitoring_cycle", 9, "test-idem-key-01", map[string]any{"test": true})
+	idemKey := fmt.Sprintf("test-idem-%d", time.Now().UnixNano())
+	j1, err := queue.EnqueueJob(ctx, "trend_monitoring_cycle", 9, idemKey, map[string]any{"test": true})
 	if err != nil {
 		t.Fatalf("EnqueueJob failed: %v", err)
 	}
-	j2, err := queue.EnqueueJob(ctx, "trend_monitoring_cycle", 9, "test-idem-key-01", map[string]any{"test": true})
+	j2, err := queue.EnqueueJob(ctx, "trend_monitoring_cycle", 9, idemKey, map[string]any{"test": true})
 	if err != nil || j1 != j2 {
 		t.Fatalf("Expected idempotent job IDs to match: %s vs %s", j1, j2)
 	}
@@ -176,8 +179,21 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 	}
 
 	// 7. Verify Chrome Extension Manifest V3 files exist
-	extManifest := filepath.Join(filepath.Dir(db.StorageRoot), "extension", "manifest.json")
-	if _, err := os.Stat(extManifest); err != nil {
-		t.Fatalf("Chrome extension manifest.json missing at %s", extManifest)
+	manifestCandidates := []string{
+		"extension/manifest.json",
+		"../extension/manifest.json",
+		"../../extension/manifest.json",
+		"../../../extension/manifest.json",
+		filepath.Join(db.StorageRoot, "..", "extension", "manifest.json"),
+	}
+	var manifestFound bool
+	for _, c := range manifestCandidates {
+		if _, err := os.Stat(c); err == nil {
+			manifestFound = true
+			break
+		}
+	}
+	if !manifestFound {
+		t.Fatalf("Chrome extension manifest.json missing in workspace")
 	}
 }
