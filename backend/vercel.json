@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "echo 'Go Serverless Backend'",
+  "buildCommand": "echo 'Building Go Functions'",
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index.go"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/api/index.go"
+    }
+  ]
+}

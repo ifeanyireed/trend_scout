@@ -50,24 +50,31 @@ func LoadEnvFile() {
 func InitStorageDirs() error {
 	StorageRoot = strings.TrimSpace(os.Getenv("STORAGE_DIR"))
 	if StorageRoot == "" {
-		cwd, err := os.Getwd()
-		if err == nil {
-			// Check if we are inside backend/ or root
-			if _, errS := os.Stat(filepath.Join(cwd, "storage")); errS == nil {
-				StorageRoot = filepath.Join(cwd, "storage")
-			} else if _, errP := os.Stat(filepath.Join(cwd, "..", "storage")); errP == nil {
-				StorageRoot = filepath.Clean(filepath.Join(cwd, "..", "storage"))
-			} else {
-				StorageRoot = filepath.Join(cwd, "storage")
-			}
+		if os.Getenv("VERCEL") != "" {
+			StorageRoot = "/tmp/storage"
 		} else {
-			StorageRoot = "./storage"
+			cwd, err := os.Getwd()
+			if err == nil {
+				// Check if we are inside backend/ or root
+				if _, errS := os.Stat(filepath.Join(cwd, "storage")); errS == nil {
+					StorageRoot = filepath.Join(cwd, "storage")
+				} else if _, errP := os.Stat(filepath.Join(cwd, "..", "storage")); errP == nil {
+					StorageRoot = filepath.Clean(filepath.Join(cwd, "..", "storage"))
+				} else {
+					StorageRoot = filepath.Join(cwd, "storage")
+				}
+			} else {
+				StorageRoot = "./storage"
+			}
 		}
 	}
 	subdirs := []string{"images", "audio", "subtitles", "exports", "characters", "emails"}
 	for _, sub := range subdirs {
-		if err := os.MkdirAll(filepath.Join(StorageRoot, sub), 0755); err != nil {
-			return err
+		dir := filepath.Join(StorageRoot, sub)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			// Fallback to /tmp/storage if current directory is read-only (e.g. AWS Lambda / Vercel)
+			StorageRoot = "/tmp/storage"
+			_ = os.MkdirAll(filepath.Join(StorageRoot, sub), 0755)
 		}
 	}
 	return nil
