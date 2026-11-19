@@ -1,4 +1,6 @@
-const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || '';
+const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+const DEFAULT_FALLBACK_API = 'https://trendscout-api.vercel.app';
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || (isLocal ? '' : 'https://trendscout-api.vercel.app');
 
 export function getAuthToken(): string | null {
   return localStorage.getItem('ts_token');
@@ -28,15 +30,48 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const resp = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-  });
+  const url = `${API_BASE}${path}`;
+  try {
+    const resp = await fetch(url, {
+      ...options,
+      headers,
+    });
 
-  if (!resp.ok) {
+    const contentType = resp.headers.get('content-type') || '';
+    if (resp.ok && contentType.includes('application/json')) {
+      return resp.json();
+    }
+
+    // If request returned non-JSON (e.g. HTML from SPA rewrite) or 404 on relative path, fallback to direct backend
+    if (!API_BASE && (!resp.ok || !contentType.includes('application/json'))) {
+      const fallbackUrl = `${DEFAULT_FALLBACK_API}${path}`;
+      const fbResp = await fetch(fallbackUrl, {
+        ...options,
+        headers,
+      });
+      if (fbResp.ok) {
+        return fbResp.json();
+      }
+    }
+
     const errBody = await resp.json().catch(() => ({}));
     throw new Error(errBody.error || `Request failed (${resp.status})`);
+  } catch (err: any) {
+    // If network error occurred and no explicit API_BASE was configured, attempt fallback to direct backend
+    if (!API_BASE && !url.startsWith('http')) {
+      try {
+        const fallbackUrl = `${DEFAULT_FALLBACK_API}${path}`;
+        const fbResp = await fetch(fallbackUrl, {
+          ...options,
+          headers,
+        });
+        if (fbResp.ok) {
+          return fbResp.json();
+        }
+      } catch (_) {
+        // Fall through to original error
+      }
+    }
+    throw err;
   }
-
-  return resp.json();
 }

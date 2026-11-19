@@ -5,6 +5,14 @@
   "framework": "vite",
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "https://trendscout-api.vercel.app/api/$1"
+    },
+    {
+      "source": "/storage/(.*)",
+      "destination": "https://trendscout-api.vercel.app/storage/$1"
+    },
+    {
       "source": "/((?!assets/|fonts/|logo\\.png|favicon\\.ico).*)",
       "destination": "/index.html"
     }
