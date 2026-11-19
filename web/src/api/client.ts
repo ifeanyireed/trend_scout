@@ -1,6 +1,5 @@
-const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 const DEFAULT_FALLBACK_API = 'https://trendscout-api.vercel.app';
-const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || (isLocal ? '' : 'https://trendscout-api.vercel.app');
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || '';
 
 export function getAuthToken(): string | null {
   return localStorage.getItem('ts_token');
@@ -47,6 +46,7 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
       const fallbackUrl = `${DEFAULT_FALLBACK_API}${path}`;
       const fbResp = await fetch(fallbackUrl, {
         ...options,
+        mode: 'cors',
         headers,
       });
       if (fbResp.ok) {
@@ -63,6 +63,7 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
         const fallbackUrl = `${DEFAULT_FALLBACK_API}${path}`;
         const fbResp = await fetch(fallbackUrl, {
           ...options,
+          mode: 'cors',
           headers,
         });
         if (fbResp.ok) {
