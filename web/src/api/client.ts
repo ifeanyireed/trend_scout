@@ -1,5 +1,7 @@
 const DEFAULT_FALLBACK_API = 'https://trendscout-api.vercel.app';
-const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || '';
+const rawBase = ((import.meta as any).env?.VITE_API_BASE_URL || '').trim();
+// Strip trailing slashes so URL joining never produces "//api"
+const API_BASE = rawBase.replace(/\/+$/, '');
 
 export function getAuthToken(): string | null {
   return localStorage.getItem('ts_token');
@@ -29,7 +31,9 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const url = `${API_BASE}${path}`;
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  const url = API_BASE ? `${API_BASE}${cleanPath}` : cleanPath;
+
   try {
     const resp = await fetch(url, {
       ...options,
@@ -43,7 +47,7 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
 
     // If request returned non-JSON (e.g. HTML from SPA rewrite) or 404 on relative path, fallback to direct backend
     if (!API_BASE && (!resp.ok || !contentType.includes('application/json'))) {
-      const fallbackUrl = `${DEFAULT_FALLBACK_API}${path}`;
+      const fallbackUrl = `${DEFAULT_FALLBACK_API}${cleanPath}`;
       const fbResp = await fetch(fallbackUrl, {
         ...options,
         mode: 'cors',
@@ -57,10 +61,10 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
     const errBody = await resp.json().catch(() => ({}));
     throw new Error(errBody.error || `Request failed (${resp.status})`);
   } catch (err: any) {
-    // If network error occurred and no explicit API_BASE was configured, attempt fallback to direct backend
-    if (!API_BASE && !url.startsWith('http')) {
+    // If request failed and we did not already call clean DEFAULT_FALLBACK_API, attempt clean fallback
+    if (url !== `${DEFAULT_FALLBACK_API}${cleanPath}`) {
       try {
-        const fallbackUrl = `${DEFAULT_FALLBACK_API}${path}`;
+        const fallbackUrl = `${DEFAULT_FALLBACK_API}${cleanPath}`;
         const fbResp = await fetch(fallbackUrl, {
           ...options,
           mode: 'cors',
