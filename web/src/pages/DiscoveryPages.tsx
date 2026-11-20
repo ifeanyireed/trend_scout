@@ -268,7 +268,26 @@ export const DashboardPage: React.FC = () => {
           </div>
 
           <div className="space-y-3.5">
-            {(data.topDiscoveries || []).map((item: any) => (
+            {(data.topDiscoveries || []).length === 0 ? (
+              <div className="p-8 rounded-2xl border border-dashed border-nexa-border bg-nexa-bg-base/40 text-center space-y-3">
+                <div className="w-11 h-11 rounded-2xl bg-nexa-brand/10 text-nexa-brand flex items-center justify-center mx-auto">
+                  <Compass className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-display text-nexa-text-primary">No Live Discoveries Yet</h3>
+                  <p className="text-xs text-nexa-text-secondary mt-1">
+                    Run a live multi-domain discovery scan across Google News, Google Trends, Wikipedia, Reddit, and YouTube.
+                  </p>
+                </div>
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent('ts-trigger-scan'))}
+                  className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold shadow-md shadow-nexa-brand/25 cursor-pointer"
+                >
+                  Run Live Discovery Scan Now →
+                </button>
+              </div>
+            ) : (
+              (data.topDiscoveries || []).map((item: any) => (
               <div
                 key={item.id}
                 onClick={() => navigate(`/opportunities/${item.id}`)}
@@ -302,7 +321,8 @@ export const DashboardPage: React.FC = () => {
                   <ArrowRight className="w-4 h-4 text-nexa-text-faint" />
                 </div>
               </div>
-            ))}
+            ))
+            )}
           </div>
         </div>
 
@@ -366,13 +386,15 @@ export const DashboardPage: React.FC = () => {
 export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emerging' | 'underdogs' }> = ({ mode }) => {
   const navigate = useNavigate();
   const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState('');
 
   const titles: Record<string, { title: string; subtitle: string }> = {
     discover: {
       title: 'Discover People & Breakthrough Events',
-      subtitle: 'Live multi-platform people and event resolution across Wikipedia, Google News, YouTube, Reddit, and Google Trends.',
+      subtitle: 'Live multi-domain discovery across Science, Tech, Business, Arts, Humanitarian, and Sports via Google News, Google Trends, Wikipedia, Reddit & YouTube.',
     },
     trending: {
       title: 'Trending Now — High-Velocity Stories',
@@ -389,18 +411,26 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
   };
 
   const load = () => {
-    apiFetch('/api/discoveries').then((res) => {
-      let list = res.discoveries || [];
-      if (mode === 'trending') {
-        list = list.filter((d: any) => d.trendStage === 'Major Viral Opportunity' || d.trendStage === 'Accelerating');
-      } else if (mode === 'emerging') {
-        list = list.filter((d: any) => d.trendStage === 'Emerging' || d.trendStage === 'Early Whisper');
-      }
-      setItems(list);
-    });
+    setError(null);
+    apiFetch('/api/discoveries')
+      .then((res) => {
+        let list = Array.isArray(res?.discoveries) ? res.discoveries : [];
+        if (mode === 'trending') {
+          list = list.filter((d: any) => d.trendStage === 'Major Viral Opportunity' || d.trendStage === 'Accelerating');
+        } else if (mode === 'emerging') {
+          list = list.filter((d: any) => d.trendStage === 'Emerging' || d.trendStage === 'Early Whisper');
+        }
+        setItems(list);
+      })
+      .catch((err) => {
+        console.error(err);
+        setError(err?.message || 'Unable to load discovery feed');
+      })
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => {
+    setLoading(true);
     load();
     window.addEventListener('ts-refresh', load);
     return () => window.removeEventListener('ts-refresh', load);
@@ -465,6 +495,42 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
         </div>
       </div>
 
+      {loading && items.length === 0 ? (
+        <div className="p-14 flex flex-col items-center justify-center space-y-3">
+          <div className="w-8 h-8 rounded-full border-2 border-nexa-brand border-t-transparent animate-spin" />
+          <div className="text-xs text-nexa-text-muted font-bold">Loading live opportunities...</div>
+        </div>
+      ) : error && items.length === 0 ? (
+        <div className="nexa-card rounded-3xl p-8 text-center space-y-3">
+          <AlertCircle className="w-6 h-6 text-amber-500 mx-auto" />
+          <div className="text-sm font-black text-display text-nexa-text-primary">Unable to load feed</div>
+          <p className="text-xs text-nexa-text-secondary">{error}</p>
+          <button
+            onClick={load}
+            className="px-5 py-2 rounded-full bg-nexa-brand text-white text-xs font-extrabold cursor-pointer"
+          >
+            Retry
+          </button>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="nexa-card rounded-3xl p-10 text-center space-y-3">
+          <Compass className="w-7 h-7 text-nexa-brand mx-auto" />
+          <div className="text-base font-black text-display text-nexa-text-primary">
+            No Matching Opportunities Found
+          </div>
+          <p className="text-xs text-nexa-text-secondary max-w-md mx-auto">
+            {search || stageFilter
+              ? 'Try clearing your search or trend stage filter.'
+              : 'Trigger a live scan to discover fresh multi-domain stories across Science, Business, Arts, Tech, Humanitarian, and Sports.'}
+          </p>
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent('ts-trigger-scan'))}
+            className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold shadow-md shadow-nexa-brand/25 cursor-pointer"
+          >
+            Run Live Discovery Scan Now →
+          </button>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 gap-4">
         {filtered.map((d) => (
           <div
@@ -538,6 +604,7 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
           </div>
         ))}
       </div>
+      )}
     </div>
   );
 };

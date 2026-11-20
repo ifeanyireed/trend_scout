@@ -1,7 +1,21 @@
-const DEFAULT_FALLBACK_API = 'https://trendscout-api.vercel.app';
-const rawBase = ((import.meta as any).env?.VITE_API_BASE_URL || '').trim();
-// Strip trailing slashes so URL joining never produces "//api"
-const API_BASE = rawBase.replace(/\/+$/, '');
+const DEFAULT_FALLBACK_API = 'https://trendscout-iota.vercel.app';
+const rawBase = ((import.meta as any).env?.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
+
+// On deployed HTTPS web domains (e.g. trendscout-iota.vercel.app), always route through
+// same-origin Vercel edge proxy (/api/*) instead of calling trendscout-api.vercel.app directly,
+// which avoids CORS preflights and ISP routing timeouts to secondary Vercel IP pools.
+function resolveApiBase(): string {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    const isLocal = host === 'localhost' || host === '127.0.0.1';
+    if (!isLocal && (!rawBase || rawBase.includes('trendscout-api.vercel.app'))) {
+      return '';
+    }
+  }
+  return rawBase;
+}
+
+const API_BASE = resolveApiBase();
 
 export function getAuthToken(): string | null {
   return localStorage.getItem('ts_token');
@@ -19,6 +33,19 @@ export function clearAuthSession() {
   localStorage.removeItem('ts_user');
 }
 
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: options.signal || controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function apiFetch<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getAuthToken();
   const headers: Record<string, string> = {
@@ -33,49 +60,33 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
 
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   const url = API_BASE ? `${API_BASE}${cleanPath}` : cleanPath;
+  const isLongOp = cleanPath.includes('/scan') || cleanPath.includes('/generate') || cleanPath.includes('/assemble-video') || cleanPath.includes('/export');
+  const timeoutMs = isLongOp ? 55000 : 18000;
 
   try {
-    const resp = await fetch(url, {
-      ...options,
-      headers,
-    });
-
+    const resp = await fetchWithTimeout(url, { ...options, headers }, timeoutMs);
     const contentType = resp.headers.get('content-type') || '';
+
     if (resp.ok && contentType.includes('application/json')) {
       return resp.json();
     }
 
-    // If request returned non-JSON (e.g. HTML from SPA rewrite) or 404 on relative path, fallback to direct backend
+    // If relative path returned HTML (e.g. local static preview without proxy), fallback to edge proxy domain
     if (!API_BASE && (!resp.ok || !contentType.includes('application/json'))) {
       const fallbackUrl = `${DEFAULT_FALLBACK_API}${cleanPath}`;
-      const fbResp = await fetch(fallbackUrl, {
-        ...options,
-        mode: 'cors',
-        headers,
-      });
-      if (fbResp.ok) {
-        return fbResp.json();
+      if (typeof window === 'undefined' || !window.location.origin.startsWith(DEFAULT_FALLBACK_API)) {
+        const fbResp = await fetchWithTimeout(fallbackUrl, { ...options, mode: 'cors', headers }, timeoutMs);
+        if (fbResp.ok && (fbResp.headers.get('content-type') || '').includes('application/json')) {
+          return fbResp.json();
+        }
       }
     }
 
     const errBody = await resp.json().catch(() => ({}));
     throw new Error(errBody.error || `Request failed (${resp.status})`);
   } catch (err: any) {
-    // If request failed and we did not already call clean DEFAULT_FALLBACK_API, attempt clean fallback
-    if (url !== `${DEFAULT_FALLBACK_API}${cleanPath}`) {
-      try {
-        const fallbackUrl = `${DEFAULT_FALLBACK_API}${cleanPath}`;
-        const fbResp = await fetch(fallbackUrl, {
-          ...options,
-          mode: 'cors',
-          headers,
-        });
-        if (fbResp.ok) {
-          return fbResp.json();
-        }
-      } catch (_) {
-        // Fall through to original error
-      }
+    if (err?.name === 'AbortError') {
+      throw new Error('Request timed out — please retry in a moment.');
     }
     throw err;
   }

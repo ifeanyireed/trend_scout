@@ -29,7 +29,7 @@ func EnsureInitialOperationalData(ctx context.Context) error {
 		`, userID, string(hash))
 
 		discPrefs, _ := json.Marshal(map[string]any{
-			"categories":            []string{"Sports & Competition", "Mind Sports & Chess", "Track & Field Athletics", "Science & Innovation"},
+			"categories":            []string{"Science & Medicine", "Technology & Innovation", "Business & Founders", "Arts, Film & Music", "Humanitarian & Civic Impact", "Sports & Competition"},
 			"regions":               []string{"Global", "North America", "Europe", "Asia", "Africa", "Latin America"},
 			"discoveryPeriodDays":   14,
 			"minOpportunityScore":   70,

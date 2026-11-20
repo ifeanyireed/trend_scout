@@ -63,6 +63,15 @@ func readJSON(r *http.Request, dst any) error {
 }
 
 func RegisterRoutes(mux *http.ServeMux) {
+	// 0. HEALTH CHECK (works on both Go Zero-Config main.go and serverless api/index.go)
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{
+			"status":  "online",
+			"service": "trendscout-studio",
+			"time":    time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+
 	// 1. AUTHENTICATION
 	mux.HandleFunc("/api/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1000,7 +1009,7 @@ func queryDiscoveriesList(ctx interface {
 	}
 	defer rows.Close()
 
-	var out []map[string]any
+	out := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, pID, eID, pName, cat, country, img, uClass, eTitle, eDate, head, ach, sURL, pub, detAt, stage, rStat string
 		var indCov int

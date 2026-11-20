@@ -1,9 +1,13 @@
-const DEFAULT_API = 'https://trendscout-api.vercel.app';
+const DEFAULT_API = 'https://trendscout-iota.vercel.app';
 const DEFAULT_DASH = 'https://trendscout-iota.vercel.app';
 
 async function getConfig() {
   const stored = await chrome.storage.local.get(['apiBaseUrl', 'dashboardBaseUrl', 'authToken', 'userEmail']);
-  const clean = (v, fb) => String(v || fb).trim().replace(/\/+$/, '') || fb;
+  const clean = (v, fb) => {
+    const c = String(v || fb).trim().replace(/\/+$/, '');
+    if (!c || c.includes('trendscout-api.vercel.app')) return fb;
+    return c;
+  };
   return {
     apiBase: clean(stored.apiBaseUrl, DEFAULT_API),
     dashBase: clean(stored.dashboardBaseUrl, DEFAULT_DASH),

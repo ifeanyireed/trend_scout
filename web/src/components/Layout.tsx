@@ -76,6 +76,13 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     }
   };
 
+  // Allow pages (e.g. empty-state CTAs) to trigger the live discovery scan bar
+  useEffect(() => {
+    const onTrigger = () => handleScanNow(false);
+    window.addEventListener('ts-trigger-scan', onTrigger);
+    return () => window.removeEventListener('ts-trigger-scan', onTrigger);
+  }, []);
+
   // Automatic live freshness check: if database is empty or last scan is > 30 mins old, sync live sources once per session
   useEffect(() => {
     if (sessionStorage.getItem('ts_auto_synced') === '1') return;

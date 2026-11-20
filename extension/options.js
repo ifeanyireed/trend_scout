@@ -1,13 +1,16 @@
 document.addEventListener('DOMContentLoaded', async () => {
   const stored = await chrome.storage.local.get(['apiBaseUrl', 'dashboardBaseUrl', 'notificationsEnabled']);
-  document.getElementById('apiBaseUrl').value = stored.apiBaseUrl || 'https://trendscout-api.vercel.app';
+  const savedApi = stored.apiBaseUrl && !stored.apiBaseUrl.includes('trendscout-api.vercel.app')
+    ? stored.apiBaseUrl
+    : 'https://trendscout-iota.vercel.app';
+  document.getElementById('apiBaseUrl').value = savedApi;
   document.getElementById('dashboardBaseUrl').value = stored.dashboardBaseUrl || 'https://trendscout-iota.vercel.app';
   document.getElementById('notificationsEnabled').checked = stored.notificationsEnabled !== false;
 
   document.getElementById('saveBtn').addEventListener('click', async () => {
     const clean = (v, fb) => String(v || fb).trim().replace(/\/+$/, '') || fb;
     await chrome.storage.local.set({
-      apiBaseUrl: clean(document.getElementById('apiBaseUrl').value, 'https://trendscout-api.vercel.app'),
+      apiBaseUrl: clean(document.getElementById('apiBaseUrl').value, 'https://trendscout-iota.vercel.app'),
       dashboardBaseUrl: clean(document.getElementById('dashboardBaseUrl').value, 'https://trendscout-iota.vercel.app'),
       notificationsEnabled: document.getElementById('notificationsEnabled').checked,
     });

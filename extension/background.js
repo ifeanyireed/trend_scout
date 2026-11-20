@@ -1,8 +1,12 @@
-const DEFAULT_API_BASE = 'https://trendscout-api.vercel.app';
+const DEFAULT_API_BASE = 'https://trendscout-iota.vercel.app';
 const DEFAULT_DASHBOARD_BASE = 'https://trendscout-iota.vercel.app';
 
 function cleanBaseUrl(u, fallback) {
-  return String(u || fallback).trim().replace(/\/+$/, '') || fallback;
+  const cleaned = String(u || fallback).trim().replace(/\/+$/, '');
+  if (!cleaned || cleaned.includes('localhost') || cleaned.includes('trendscout-api.vercel.app')) {
+    return fallback;
+  }
+  return cleaned;
 }
 
 async function ensurePollingAlarm() {
@@ -12,27 +16,35 @@ async function ensurePollingAlarm() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(async () => {
+async function migrateLegacyStorage() {
   const stored = await chrome.storage.local.get(['apiBaseUrl', 'dashboardBaseUrl', 'notificationsEnabled', 'seenNotificationIds']);
-  const isLegacyLocal = stored.apiBaseUrl && stored.apiBaseUrl.includes('localhost');
-  if (!stored.apiBaseUrl || isLegacyLocal) {
+  const needsMigration =
+    !stored.apiBaseUrl ||
+    stored.apiBaseUrl.includes('localhost') ||
+    stored.apiBaseUrl.includes('trendscout-api.vercel.app');
+  if (needsMigration) {
     await chrome.storage.local.set({
       apiBaseUrl: DEFAULT_API_BASE,
-      dashboardBaseUrl: DEFAULT_DASHBOARD_BASE,
+      dashboardBaseUrl: stored.dashboardBaseUrl && !stored.dashboardBaseUrl.includes('localhost') ? stored.dashboardBaseUrl : DEFAULT_DASHBOARD_BASE,
       notificationsEnabled: stored.notificationsEnabled !== false,
       seenNotificationIds: stored.seenNotificationIds || [],
     });
   }
+}
+
+chrome.runtime.onInstalled.addListener(async () => {
+  await migrateLegacyStorage();
   await ensurePollingAlarm();
   pollBackendSummary();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  await migrateLegacyStorage();
   await ensurePollingAlarm();
   pollBackendSummary();
 });
 
-ensurePollingAlarm();
+migrateLegacyStorage().then(() => ensurePollingAlarm());
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'trendscout-poll') {

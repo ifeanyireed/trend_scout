@@ -210,17 +210,29 @@ func isLikelyHumanBio(title, desc, extract string) bool {
 		}
 	}
 
-	// Strong biographical proof: birth date/year or explicit individual profession
+	// Strong biographical proof: birth date/year or explicit individual profession across all domains
 	hasBirthMarker := strings.Contains(combined, "(born ") || strings.Contains(combined, "born ")
 	humanProfessions := []string{
+		// Science, Medicine & Tech
+		"scientist", "inventor", "researcher", "mathematician", "physicist", "chemist",
+		"biologist", "neuroscientist", "astronomer", "engineer", "programmer", "computer scientist",
+		"physician", "doctor", "surgeon", "professor", "educator", "economist", "architect",
+		// Business & Founders
+		"entrepreneur", "founder", "co-founder", "businessperson", "businessman", "businesswoman",
+		"executive", "philanthropist", "investor", "industrialist",
+		// Arts, Film, Music & Literature
+		"musician", "singer", "songwriter", "composer", "pianist", "violinist", "rapper",
+		"actor", "actress", "filmmaker", "director", "screenwriter", "producer",
+		"author", "novelist", "writer", "poet", "journalist", "painter", "sculptor", "designer", "chef",
+		// Humanitarian, Exploration & Civic
+		"activist", "humanitarian", "explorer", "astronaut", "mountaineer", "pilot", "advocate",
+		// Sports & Mind Sports
 		"player", "athlete", "sprinter", "runner", "swimmer", "cyclist", "gymnast",
 		"boxer", "fighter", "wrestler", "grandmaster", "chess", "skater", "climber",
 		"thrower", "jumper", "medalist", "olympian", "paralympian", "competitor",
 		"driver", "racer", "golfer", "tennis", "footballer", "cricketer", "judoka",
 		"fencer", "skier", "diver", "archer", "rower", "weightlifter", "surfer",
-		"mountaineer", "scientist", "inventor", "researcher", "mathematician",
-		"physicist", "musician", "singer", "actor", "actress", "director", "author",
-		"activist", "coach", "badminton", "taekwondo", "javelin", "marathon",
+		"coach", "badminton", "taekwondo", "javelin", "marathon",
 	}
 	for _, prof := range humanProfessions {
 		if strings.Contains(combined, prof) {
@@ -234,24 +246,36 @@ func inferCountryAndCategory(desc, extract string) (string, string) {
 	combined := desc + " " + extract
 	lower := strings.ToLower(combined)
 
-	category := "Sports & Competition"
+	category := "Breakthrough & Human Interest"
 	switch {
+	case strings.Contains(lower, "physician") || strings.Contains(lower, "surgeon") || strings.Contains(lower, "biologist") || strings.Contains(lower, "chemist") || strings.Contains(lower, "physicist") || strings.Contains(lower, "scientist") || strings.Contains(lower, "neuroscientist") || strings.Contains(lower, "mathematician") || strings.Contains(lower, "nobel prize in"):
+		category = "Science & Medicine"
+	case strings.Contains(lower, "computer scientist") || strings.Contains(lower, "programmer") || strings.Contains(lower, "software") || strings.Contains(lower, "inventor") || strings.Contains(lower, "engineer") || strings.Contains(lower, "artificial intelligence"):
+		category = "Technology & Innovation"
+	case strings.Contains(lower, "entrepreneur") || strings.Contains(lower, "founder") || strings.Contains(lower, "businessperson") || strings.Contains(lower, "businessman") || strings.Contains(lower, "businesswoman") || strings.Contains(lower, "ceo") || strings.Contains(lower, "startup"):
+		category = "Business & Founders"
+	case strings.Contains(lower, "filmmaker") || strings.Contains(lower, "director") || strings.Contains(lower, "musician") || strings.Contains(lower, "singer") || strings.Contains(lower, "composer") || strings.Contains(lower, "actor") || strings.Contains(lower, "actress") || strings.Contains(lower, "novelist") || strings.Contains(lower, "author") || strings.Contains(lower, "painter") || strings.Contains(lower, "chef"):
+		category = "Arts, Film & Music"
+	case strings.Contains(lower, "activist") || strings.Contains(lower, "humanitarian") || strings.Contains(lower, "philanthropist") || strings.Contains(lower, "nobel peace"):
+		category = "Humanitarian & Civic Impact"
+	case strings.Contains(lower, "astronaut") || strings.Contains(lower, "explorer") || strings.Contains(lower, "mountaineer") || strings.Contains(lower, "pilot"):
+		category = "Exploration & Survival"
 	case strings.Contains(lower, "chess") || strings.Contains(lower, "grandmaster"):
 		category = "Mind Sports & Chess"
 	case strings.Contains(lower, "sprinter") || strings.Contains(lower, "hurdler") || strings.Contains(lower, "marathon") || strings.Contains(lower, "javelin") || strings.Contains(lower, "track and field") || strings.Contains(lower, "decathlon") || strings.Contains(lower, "jump"):
 		category = "Track & Field Athletics"
-	case strings.Contains(lower, "cyclist") || strings.Contains(lower, "tour de france") || strings.Contains(lower, "triumph"):
+	case strings.Contains(lower, "cyclist") || strings.Contains(lower, "tour de france"):
 		category = "Pro Cycling & Endurance"
 	case strings.Contains(lower, "tennis"):
-		category = " Racquet & Court Sports"
+		category = "Racquet & Court Sports"
 	case strings.Contains(lower, "swimmer") || strings.Contains(lower, "swimming") || strings.Contains(lower, "diving"):
 		category = "Aquatics & Swimming"
 	case strings.Contains(lower, "gymnast"):
 		category = "Artistic Gymnastics"
 	case strings.Contains(lower, "boxer") || strings.Contains(lower, "martial") || strings.Contains(lower, "wrestler") || strings.Contains(lower, "judo") || strings.Contains(lower, "taekwondo"):
 		category = "Combat Sports"
-	case strings.Contains(lower, "scientist") || strings.Contains(lower, "inventor") || strings.Contains(lower, "mathematician") || strings.Contains(lower, "engineer"):
-		category = "Science & Innovation"
+	case strings.Contains(lower, "athlete") || strings.Contains(lower, "olympian") || strings.Contains(lower, "paralympian") || strings.Contains(lower, "medalist") || strings.Contains(lower, "footballer") || strings.Contains(lower, "cricketer") || strings.Contains(lower, "golfer") || strings.Contains(lower, "skater"):
+		category = "Sports & Competition"
 	}
 
 	nationalityMap := map[string]string{
@@ -426,12 +450,23 @@ type rssFeed struct {
 }
 
 func DiscoverGoogleNews(ctx context.Context, queries []string) []DiscoveredCandidate {
-	if len(queries) == 0 {
-		queries = []string{
-			`("underdog" OR "unseeded") champion athlete breakthrough when:7d`,
-			`("world record" OR "first ever") medalist athlete victory when:7d`,
-			`("youngest" OR "upset" OR "historic") champion sports OR chess when:7d`,
-			`("comeback" OR "breakthrough") scientist OR athlete OR prodigy when:7d`,
+	type domainQuery struct {
+		query    string
+		category string
+	}
+	var dQueries []domainQuery
+	if len(queries) > 0 {
+		for _, q := range queries {
+			dQueries = append(dQueries, domainQuery{query: q, category: "Breakthrough & Human Interest"})
+		}
+	} else {
+		dQueries = []domainQuery{
+			{query: `("breakthrough" OR "prize" OR "discovery") scientist OR inventor OR researcher when:7d`, category: "Science & Medicine"},
+			{query: `("bootstrapped" OR "self-made" OR "against all odds") founder OR entrepreneur when:7d`, category: "Business & Founders"},
+			{query: `("breakout" OR "debut" OR "historic") filmmaker OR musician OR author OR artist when:7d`, category: "Arts, Film & Music"},
+			{query: `("youngest" OR "prodigy" OR "self-taught") inventor OR programmer OR engineer OR AI when:7d`, category: "Technology & Innovation"},
+			{query: `("humanitarian" OR "activist" OR "survived" OR "first ever") hero OR explorer OR pioneer when:7d`, category: "Humanitarian & Civic Impact"},
+			{query: `("underdog" OR "unseeded" OR "upset") champion athlete OR chess OR medalist when:7d`, category: "Sports & Competition"},
 		}
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -441,11 +476,11 @@ func DiscoverGoogleNews(ctx context.Context, queries []string) []DiscoveredCandi
 		wg  sync.WaitGroup
 	)
 
-	for _, q := range queries {
+	for _, dq := range dQueries {
 		wg.Add(1)
-		go func(query string) {
+		go func(itemQuery domainQuery) {
 			defer wg.Done()
-			u := fmt.Sprintf("https://news.google.com/rss/search?q=%s&hl=en-US&gl=US&ceid=US:en", url.QueryEscape(query))
+			u := fmt.Sprintf("https://news.google.com/rss/search?q=%s&hl=en-US&gl=US&ceid=US:en", url.QueryEscape(itemQuery.query))
 			req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 			if err != nil {
 				return
@@ -467,7 +502,7 @@ func DiscoverGoogleNews(ctx context.Context, queries []string) []DiscoveredCandi
 			}
 			var local []DiscoveredCandidate
 			for i, item := range feed.Channel.Items {
-				if i >= 6 {
+				if i >= 4 {
 					break
 				}
 				rawTitle := strings.TrimSpace(item.Title)
@@ -491,7 +526,7 @@ func DiscoverGoogleNews(ctx context.Context, queries []string) []DiscoveredCandi
 				local = append(local, DiscoveredCandidate{
 					SourceID:    "src-google-news",
 					PersonName:  ExtractPersonFromHeadline(headline),
-					Category:    "Sports & Competition",
+					Category:    itemQuery.category,
 					Country:     "Global",
 					EventTitle:  headline,
 					EventDate:   eventDate,
@@ -508,22 +543,26 @@ func DiscoverGoogleNews(ctx context.Context, queries []string) []DiscoveredCandi
 				out = append(out, local...)
 				mu.Unlock()
 			}
-		}(q)
+		}(dq)
 	}
 	wg.Wait()
 	return out
 }
 
-// 2. MULTI-SUBREDDIT LIVE REDDIT CONNECTOR
+// 2. MULTI-DOMAIN LIVE REDDIT CONNECTOR
 func DiscoverRedditBreakouts(ctx context.Context) []DiscoveredCandidate {
-	subreddits := []string{
-		"sports",
-		"olympics",
-		"tennis",
-		"chess",
-		"trackandfield",
-		"NextFuckingLevel",
-		"UpliftingNews",
+	subreddits := []struct {
+		name     string
+		category string
+	}{
+		{"UpliftingNews", "Humanitarian & Civic Impact"},
+		{"NextFuckingLevel", "Breakthrough & Human Interest"},
+		{"science", "Science & Medicine"},
+		{"technology", "Technology & Innovation"},
+		{"Entrepreneur", "Business & Founders"},
+		{"movies", "Arts, Film & Music"},
+		{"sports", "Sports & Competition"},
+		{"chess", "Mind Sports & Chess"},
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	var (
@@ -534,9 +573,9 @@ func DiscoverRedditBreakouts(ctx context.Context) []DiscoveredCandidate {
 
 	for _, sub := range subreddits {
 		wg.Add(1)
-		go func(subreddit string) {
+		go func(subreddit, defaultCat string) {
 			defer wg.Done()
-			u := fmt.Sprintf("https://www.reddit.com/r/%s/top.json?t=week&limit=6", subreddit)
+			u := fmt.Sprintf("https://www.reddit.com/r/%s/top.json?t=week&limit=5", subreddit)
 			req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 			if err != nil {
 				return
@@ -579,7 +618,7 @@ func DiscoverRedditBreakouts(ctx context.Context) []DiscoveredCandidate {
 				local = append(local, DiscoveredCandidate{
 					SourceID:    "src-reddit",
 					PersonName:  ExtractPersonFromHeadline(p.Title),
-					Category:    "Sports & Competition",
+					Category:    defaultCat,
 					Country:     "Global",
 					EventTitle:  p.Title,
 					EventDate:   dt,
@@ -608,7 +647,7 @@ func DiscoverRedditBreakouts(ctx context.Context) []DiscoveredCandidate {
 				out = append(out, local...)
 				mu.Unlock()
 			}
-		}(sub)
+		}(sub.name, sub.category)
 	}
 	wg.Wait()
 	return out
@@ -710,16 +749,28 @@ func DiscoverGoogleTrends(ctx context.Context) []DiscoveredCandidate {
 	return out
 }
 
-// 4. DYNAMIC WIKIPEDIA SEARCH & BREAKOUT CONNECTOR (Zero Hardcoded Names, Concurrent)
+// 4. DYNAMIC MULTI-DOMAIN WIKIPEDIA SEARCH & BREAKOUT CONNECTOR (Zero Hardcoded Names, Rotating Across Domains)
 func DiscoverWikipediaBreakouts(ctx context.Context, queries []string) []DiscoveredCandidate {
 	if len(queries) == 0 {
-		year := time.Now().Year()
-		queries = []string{
-			fmt.Sprintf("world champion youngest medalist %d OR %d", year, year-1),
-			fmt.Sprintf("unseeded champion upset victory %d OR %d", year, year-1),
-			"olympic record gold medalist biography",
+		// Balanced multi-domain query pool spanning Science, Tech, Business, Arts, Humanitarian & Sports
+		pool := []string{
+			"self-taught scientist inventor breakthrough discovery biography",
+			"bootstrapped founder entrepreneur overcame poverty biography",
+			"independent filmmaker debut director award breakthrough biography",
+			"humanitarian activist nobel laureate overcame adversity biography",
+			"computer scientist open source creator prodigy biography",
+			"unseeded champion paralympic underdog gold medalist biography",
+			"physician surgeon medical pioneer breakthrough biography",
+			"breakout musician composer debut album biography",
+		}
+		// Rotate starting slice & search offset over time so repeated scans discover fresh multi-domain subjects
+		rot := int(time.Now().Unix()/60) % len(pool)
+		queries = make([]string, 0, 5)
+		for i := 0; i < 5; i++ {
+			queries = append(queries, pool[(rot+i)%len(pool)])
 		}
 	}
+	sroffset := int((time.Now().Unix() / 90) % 15)
 	client := &http.Client{Timeout: 5 * time.Second}
 	var (
 		titles []string
@@ -732,7 +783,7 @@ func DiscoverWikipediaBreakouts(ctx context.Context, queries []string) []Discove
 		wg.Add(1)
 		go func(query string) {
 			defer wg.Done()
-			u := fmt.Sprintf("https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=%s&srlimit=5&format=json", url.QueryEscape(query))
+			u := fmt.Sprintf("https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=%s&srlimit=4&sroffset=%d&format=json", url.QueryEscape(query), sroffset)
 			req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 			if err != nil {
 				return
@@ -770,8 +821,8 @@ func DiscoverWikipediaBreakouts(ctx context.Context, queries []string) []Discove
 	}
 	wg.Wait()
 
-	if len(titles) > 8 {
-		titles = titles[:8]
+	if len(titles) > 10 {
+		titles = titles[:10]
 	}
 
 	var out []DiscoveredCandidate
@@ -928,7 +979,7 @@ func LookupYouTubeVideoForPerson(ctx context.Context, personName string, youtube
 	}
 
 	// 2. Public YouTube Search Page Extraction (No API Key Required)
-	q := url.QueryEscape(personName + " champion OR interview OR documentary")
+	q := url.QueryEscape(personName + " story OR interview OR documentary")
 	searchPageURL := fmt.Sprintf("https://www.youtube.com/results?search_query=%s", q)
 	req, err := http.NewRequestWithContext(ctx, "GET", searchPageURL, nil)
 	if err != nil {
