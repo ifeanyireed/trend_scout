@@ -16,7 +16,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"trendscout-backend/internal/agents"
 	"trendscout-backend/internal/db"
-	"trendscout-backend/internal/queue"
 	"trendscout-backend/internal/services"
 )
 
@@ -165,21 +164,20 @@ func RegisterRoutes(mux *http.ServeMux) {
 			"completedPackages":       countQuery(`SELECT COUNT(*) FROM production_exports WHERE export_type = 'package_zip'`),
 		}
 
+		var lastScan string
+		_ = db.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(last_scan_at)::text, '') FROM connected_sources WHERE enabled = TRUE`).Scan(&lastScan)
+
 		cRows, _ := db.DB.QueryContext(ctx, `
 			SELECT id, name, platform, enabled, quota_used, quota_limit, COALESCE(last_scan_at::text, ''), status
 			FROM connected_sources ORDER BY name ASC
 		`)
 		var connectorsList []map[string]any
-		var lastScan string
 		if cRows != nil {
 			for cRows.Next() {
 				var id, name, plat, last, st string
 				var en bool
 				var qu, ql int
 				if cRows.Scan(&id, &name, &plat, &en, &qu, &ql, &last, &st) == nil {
-					if lastScan == "" && last != "" {
-						lastScan = last
-					}
 					connectorsList = append(connectorsList, map[string]any{
 						"id": id, "name": name, "platform": plat, "enabled": en,
 						"quotaUsed": qu, "quotaLimit": ql, "lastScanAt": last, "status": st,
@@ -274,24 +272,79 @@ func RegisterRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"discoveries": items})
 	})
 
+	runLiveScanHandler := func(w http.ResponseWriter, r *http.Request, trigger string) {
+		var req struct {
+			Queries []string `json:"queries"`
+		}
+		if r.Body != nil && r.Method == http.MethodPost {
+			_ = readJSON(r, &req)
+		}
+
+		scanCtx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+		defer cancel()
+
+		jobID := "job-" + uuid.NewString()
+		payloadBytes, _ := json.Marshal(map[string]any{"trigger": trigger, "queries": req.Queries})
+		_, _ = db.DB.ExecContext(scanCtx, `
+			INSERT INTO background_jobs (id, job_type, queue_name, priority, payload_json, status, attempts, max_attempts, started_at, heartbeat_at)
+			VALUES ($1, 'discovery_scan', 'live', 9, $2, 'running', 1, 1, NOW(), NOW())
+		`, jobID, string(payloadBytes))
+
+		res, err := agents.RunLiveDiscoveryCycle(scanCtx, req.Queries)
+		if err != nil {
+			_, _ = db.DB.ExecContext(context.Background(), `
+				UPDATE background_jobs SET status = 'dead_letter', error_message = $2, completed_at = NOW(), updated_at = NOW() WHERE id = $1
+			`, jobID, err.Error())
+			writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error(), "jobId": jobID})
+			return
+		}
+
+		obsCount, _ := agents.RunTrendMonitoringCycle(scanCtx)
+
+		summary := map[string]any{
+			"ok":                  true,
+			"jobId":               jobID,
+			"trigger":             trigger,
+			"newDiscoveries":      res.NewDiscoveries,
+			"updatedExisting":     res.UpdatedExisting,
+			"candidatesFetched":   res.CandidatesFetched,
+			"verifiedPeople":      res.VerifiedPeople,
+			"sourcesScanned":      res.SourcesScanned,
+			"usedGemini":          res.UsedGemini,
+			"observationsUpdated": obsCount,
+			"durationMs":          res.DurationMs,
+			"scannedAt":           time.Now().UTC().Format(time.RFC3339),
+		}
+		resBytes, _ := json.Marshal(summary)
+		_, _ = db.DB.ExecContext(context.Background(), `
+			UPDATE background_jobs SET status = 'completed', result_json = $2, error_message = NULL, completed_at = NOW(), updated_at = NOW() WHERE id = $1
+		`, jobID, string(resBytes))
+
+		writeJSON(w, 200, summary)
+	}
+
 	mux.HandleFunc("/api/discoveries/scan", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
 			return
 		}
-		var req struct {
-			Queries []string `json:"queries"`
+		runLiveScanHandler(w, r, "manual")
+	})
+
+	// Vercel Cron & Scheduled Live Discovery Endpoint (supports GET for Vercel Cron and POST)
+	mux.HandleFunc("/api/cron/discovery", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+			return
 		}
-		_ = readJSON(r, &req)
-		newCount, _ := agents.RunDiscoveryCycle(r.Context(), req.Queries)
-		obsCount, _ := agents.RunTrendMonitoringCycle(r.Context())
-		jobID, _ := queue.EnqueueJob(r.Context(), "trend_monitoring_cycle", 8, "", map[string]any{"manual": true})
-		writeJSON(w, 200, map[string]any{
-			"ok":                  true,
-			"newDiscoveries":      newCount,
-			"observationsUpdated": obsCount,
-			"jobId":               jobID,
-		})
+		if secret := strings.TrimSpace(os.Getenv("CRON_SECRET")); secret != "" {
+			auth := strings.TrimSpace(r.Header.Get("Authorization"))
+			if auth != "Bearer "+secret {
+				writeJSON(w, 401, map[string]string{"error": "unauthorized cron invocation"})
+				return
+			}
+		}
+		runLiveScanHandler(w, r, "vercel_cron")
 	})
 
 	mux.HandleFunc("/api/discoveries/", func(w http.ResponseWriter, r *http.Request) {

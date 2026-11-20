@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"trendscout-backend/internal/db"
@@ -107,7 +108,7 @@ func EnsureInitialOperationalData(ctx context.Context) error {
 	for _, s := range sources {
 		_, _ = db.DB.ExecContext(ctx, `
 			INSERT INTO connected_sources (id, name, platform, enabled, quota_used, quota_limit, last_scan_at, status, error_message)
-			VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7)
+			VALUES ($1, $2, $3, $4, 0, $5, NULL, $6, $7)
 			ON CONFLICT (id) DO UPDATE SET
 				name = EXCLUDED.name,
 				enabled = EXCLUDED.enabled,
@@ -116,11 +117,13 @@ func EnsureInitialOperationalData(ctx context.Context) error {
 		`, s.id, s.name, s.platform, s.enabled, s.limit, s.status, s.errMsg)
 	}
 
-	// 3. If no discoveries exist yet, run a 100% live discovery cycle (zero hardcoded seed profiles)
+	// 3. If no discoveries exist yet, run a bounded 100% live discovery cycle (zero hardcoded seed profiles)
 	var discCount int
 	_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM discoveries`).Scan(&discCount)
 	if discCount == 0 {
-		_, _ = RunDiscoveryCycle(ctx, nil)
+		bootCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		_, _ = RunLiveDiscoveryCycle(bootCtx, nil)
 	}
 
 	return nil

@@ -32,6 +32,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [scanning, setScanning] = useState(false);
+  const [scanBanner, setScanBanner] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [isDark, setIsDark] = useState(() => localStorage.getItem('ts_theme') === 'dark');
 
   useEffect(() => {
@@ -44,15 +45,52 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     }
   }, [isDark]);
 
-  const handleScanNow = async () => {
+  const handleScanNow = async (silent = false) => {
     setScanning(true);
+    if (!silent) {
+      setScanBanner({ type: 'info', message: 'Scanning live sources (Google News, Google Trends, Reddit, Wikipedia, YouTube)...' });
+    }
     try {
-      await apiFetch('/api/discoveries/scan', { method: 'POST', body: '{}' });
+      const res = await apiFetch('/api/discoveries/scan', { method: 'POST', body: '{}' });
       window.dispatchEvent(new CustomEvent('ts-refresh'));
+      const newCount = res?.newDiscoveries ?? 0;
+      const fetched = res?.candidatesFetched ?? 0;
+      const sec = res?.durationMs ? (res.durationMs / 1000).toFixed(1) : '0';
+      setScanBanner({
+        type: 'success',
+        message:
+          newCount > 0
+            ? `Live scan complete (${sec}s): +${newCount} new opportunities discovered from ${fetched} live signals.`
+            : `Live scan complete (${sec}s): Checked ${fetched} live signals & refreshed velocity metrics.`,
+      });
+      setTimeout(() => setScanBanner(null), 7000);
+    } catch (err: any) {
+      if (!silent) {
+        setScanBanner({
+          type: 'error',
+          message: `Live scan failed: ${err?.message || 'Unable to reach discovery engine'}`,
+        });
+      }
     } finally {
       setScanning(false);
     }
   };
+
+  // Automatic live freshness check: if database is empty or last scan is > 30 mins old, sync live sources once per session
+  useEffect(() => {
+    if (sessionStorage.getItem('ts_auto_synced') === '1') return;
+    apiFetch('/api/dashboard/overview')
+      .then((ov) => {
+        const count = ov?.metrics?.newDiscoveries ?? 0;
+        const lastScan = ov?.monitoringStatus?.lastScanAt;
+        const isStale = !lastScan || Date.now() - new Date(lastScan).getTime() > 30 * 60 * 1000;
+        if (count === 0 || isStale) {
+          sessionStorage.setItem('ts_auto_synced', '1');
+          handleScanNow(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const filteredNavItems = NAV_ITEMS.filter((item) =>
     item.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -84,7 +122,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
         <div className="flex items-center gap-1.5">
           <button
-            onClick={handleScanNow}
+            onClick={() => handleScanNow(false)}
             disabled={scanning}
             className="px-2.5 py-1 rounded-full bg-nexa-brand text-white text-[10px] font-extrabold flex items-center gap-1"
           >
@@ -171,7 +209,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               </div>
 
               <button
-                onClick={handleScanNow}
+                onClick={() => handleScanNow(false)}
                 disabled={scanning}
                 className="w-full py-2.5 px-4 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-nexa-brand/20 transition cursor-pointer"
               >
@@ -181,7 +219,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             </>
           ) : (
             <button
-              onClick={handleScanNow}
+              onClick={() => handleScanNow(false)}
               disabled={scanning}
               title="Run Discovery Scan Now"
               className="w-10 h-10 mx-auto rounded-full bg-nexa-brand text-white flex items-center justify-center shadow-md shadow-nexa-brand/20 cursor-pointer"
@@ -313,6 +351,26 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       {/* MAIN WORKSPACE CONTENT */}
       <main className="flex-1 flex flex-col min-w-0 overflow-y-auto pb-24 md:pb-10">
         <div className="max-w-7xl w-full mx-auto px-3.5 sm:px-6 md:px-8 py-5 sm:py-7 space-y-6">
+          {scanBanner && (
+            <div
+              className={`px-4 py-3 rounded-2xl border text-xs font-bold flex items-center justify-between gap-3 ${
+                scanBanner.type === 'error'
+                  ? 'bg-rose-500/10 border-rose-500/30 text-rose-500'
+                  : scanBanner.type === 'success'
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                  : 'bg-nexa-brand/10 border-nexa-brand/30 text-nexa-brand'
+              }`}
+            >
+              <span>{scanBanner.message}</span>
+              <button
+                type="button"
+                onClick={() => setScanBanner(null)}
+                className="opacity-70 hover:opacity-100 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
           {children}
         </div>
       </main>

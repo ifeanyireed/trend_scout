@@ -1,19 +1,38 @@
 const DEFAULT_API_BASE = 'https://trendscout-api.vercel.app';
 const DEFAULT_DASHBOARD_BASE = 'https://trendscout-iota.vercel.app';
 
+function cleanBaseUrl(u, fallback) {
+  return String(u || fallback).trim().replace(/\/+$/, '') || fallback;
+}
+
+async function ensurePollingAlarm() {
+  const existing = await chrome.alarms.get('trendscout-poll');
+  if (!existing) {
+    chrome.alarms.create('trendscout-poll', { periodInMinutes: 1 });
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   const stored = await chrome.storage.local.get(['apiBaseUrl', 'dashboardBaseUrl', 'notificationsEnabled', 'seenNotificationIds']);
-  if (!stored.apiBaseUrl) {
+  const isLegacyLocal = stored.apiBaseUrl && stored.apiBaseUrl.includes('localhost');
+  if (!stored.apiBaseUrl || isLegacyLocal) {
     await chrome.storage.local.set({
       apiBaseUrl: DEFAULT_API_BASE,
       dashboardBaseUrl: DEFAULT_DASHBOARD_BASE,
-      notificationsEnabled: true,
-      seenNotificationIds: [],
+      notificationsEnabled: stored.notificationsEnabled !== false,
+      seenNotificationIds: stored.seenNotificationIds || [],
     });
   }
-  chrome.alarms.create('trendscout-poll', { periodInMinutes: 1 });
+  await ensurePollingAlarm();
   pollBackendSummary();
 });
+
+chrome.runtime.onStartup.addListener(async () => {
+  await ensurePollingAlarm();
+  pollBackendSummary();
+});
+
+ensurePollingAlarm();
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'trendscout-poll') {
@@ -29,10 +48,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 chrome.notifications.onClicked.addListener(async (notificationId) => {
-  const stored = await chrome.storage.local.get(['dashboardBaseUrl', 'notificationRoutes']);
-  const dashBase = stored.dashboardBaseUrl || DEFAULT_DASHBOARD_BASE;
+  const stored = await chrome.storage.local.get(['apiBaseUrl', 'authToken', 'dashboardBaseUrl', 'notificationRoutes']);
+  const apiBase = cleanBaseUrl(stored.apiBaseUrl, DEFAULT_API_BASE);
+  const dashBase = cleanBaseUrl(stored.dashboardBaseUrl, DEFAULT_DASHBOARD_BASE);
   const routes = stored.notificationRoutes || {};
   const targetPath = routes[notificationId] || '/';
+  // Mark notification read on cloud backend
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (stored.authToken) headers['Authorization'] = `Bearer ${stored.authToken}`;
+    await fetch(`${apiBase}/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: 'POST', headers });
+  } catch (_) {}
   chrome.tabs.create({ url: `${dashBase}${targetPath}` });
 });
 
@@ -45,7 +71,7 @@ async function pollBackendSummary() {
       'seenNotificationIds',
       'notificationRoutes',
     ]);
-    const apiBase = stored.apiBaseUrl || DEFAULT_API_BASE;
+    const apiBase = cleanBaseUrl(stored.apiBaseUrl, DEFAULT_API_BASE);
     const headers = { 'Content-Type': 'application/json' };
     if (stored.authToken) {
       headers['Authorization'] = `Bearer ${stored.authToken}`;

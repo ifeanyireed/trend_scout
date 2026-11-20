@@ -181,8 +181,10 @@ func (wm *WorkerManager) StartBackgroundLoop(ctx context.Context) {
 	go func() {
 		workerTicker := time.NewTicker(3 * time.Second)
 		scheduleTicker := time.NewTicker(5 * time.Minute)
+		discoveryTicker := time.NewTicker(15 * time.Minute)
 		defer workerTicker.Stop()
 		defer scheduleTicker.Stop()
+		defer discoveryTicker.Stop()
 
 		for {
 			select {
@@ -202,6 +204,13 @@ func (wm *WorkerManager) StartBackgroundLoop(ctx context.Context) {
 				_, err := EnqueueJob(ctx, "trend_monitoring_cycle", 6, windowKey, map[string]any{"trigger": "scheduler"})
 				if err != nil {
 					log.Printf("scheduler enqueue error: %v", err)
+				}
+			case <-discoveryTicker.C:
+				wm.RecoverStalledJobs(ctx)
+				discKey := fmt.Sprintf("scheduled-discovery-%s", time.Now().UTC().Format("2006-01-02T15:04"))
+				_, err := EnqueueJob(ctx, "discovery_scan", 8, discKey, map[string]any{"trigger": "scheduler"})
+				if err != nil {
+					log.Printf("discovery scheduler enqueue error: %v", err)
 				}
 			}
 		}

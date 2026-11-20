@@ -285,10 +285,11 @@ export const DashboardPage: React.FC = () => {
                     </span>
                   </div>
                   <p className="text-xs text-nexa-text-secondary line-clamp-2">{item.achievement}</p>
-                  <div className="flex items-center gap-4 text-[11px] text-nexa-text-muted font-semibold pt-1">
+                  <div className="flex items-center gap-4 text-[11px] text-nexa-text-muted font-semibold pt-1 flex-wrap">
                     <span>🔥 {Number(item.viewsPerHour).toLocaleString()} views/hr</span>
                     <span>📈 {item.channelRelativePerf}x channel baseline</span>
                     <span>📰 {item.independentCoverageCount} independent sources</span>
+                    <span>📡 {item.publisher}</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
@@ -387,7 +388,7 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
     },
   };
 
-  useEffect(() => {
+  const load = () => {
     apiFetch('/api/discoveries').then((res) => {
       let list = res.discoveries || [];
       if (mode === 'trending') {
@@ -397,6 +398,12 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
       }
       setItems(list);
     });
+  };
+
+  useEffect(() => {
+    load();
+    window.addEventListener('ts-refresh', load);
+    return () => window.removeEventListener('ts-refresh', load);
   }, [mode]);
 
   const filtered = items.filter((d) => {

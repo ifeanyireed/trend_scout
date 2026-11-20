@@ -5,11 +5,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('notificationsEnabled').checked = stored.notificationsEnabled !== false;
 
   document.getElementById('saveBtn').addEventListener('click', async () => {
+    const clean = (v, fb) => String(v || fb).trim().replace(/\/+$/, '') || fb;
     await chrome.storage.local.set({
-      apiBaseUrl: document.getElementById('apiBaseUrl').value.trim(),
-      dashboardBaseUrl: document.getElementById('dashboardBaseUrl').value.trim(),
+      apiBaseUrl: clean(document.getElementById('apiBaseUrl').value, 'https://trendscout-api.vercel.app'),
+      dashboardBaseUrl: clean(document.getElementById('dashboardBaseUrl').value, 'https://trendscout-iota.vercel.app'),
       notificationsEnabled: document.getElementById('notificationsEnabled').checked,
     });
+    chrome.runtime.sendMessage({ type: 'POLL_NOW' }).catch(() => {});
     const st = document.getElementById('statusMsg');
     st.textContent = 'Preferences saved!';
     setTimeout(() => { st.textContent = ''; }, 2500);

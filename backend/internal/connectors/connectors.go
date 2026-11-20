@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -146,22 +147,60 @@ func ExtractPersonFromHeadline(headline string) string {
 	return ""
 }
 
-func isLikelyHumanBio(desc, extract string) bool {
+func isLikelyHumanBio(title, desc, extract string) bool {
+	titleTrim := strings.TrimSpace(title)
+	if titleTrim == "" || (titleTrim[0] >= '0' && titleTrim[0] <= '9') {
+		return false
+	}
+	titleLower := strings.ToLower(titleTrim)
+	nonHumanTitleWords := []string{
+		"university", "college", "festival", "championship", "tournament", "league",
+		"association", "federation", "organization", "organisation", "committee",
+		"conference", "museum", "stadium", "arena", "olympics", "paralympics",
+		"games", "series", "season", "award", "trophy", "cup", "club", "team",
+		"fc", "f.c.", "sc", "united", "national", "ministry", "department", "party",
+		"list of", "history of", "records", "medal", "event", "match", "finals",
+		" open", "grand prix", "marathon", "classic", "masters", "tour",
+	}
+	for _, w := range nonHumanTitleWords {
+		if strings.Contains(titleLower, w) {
+			return false
+		}
+	}
+
 	combined := strings.ToLower(desc + " " + extract)
 	nonHumanMarkers := []string{
 		"is a professional sports team",
 		"is a football club",
 		"is a basketball team",
 		"is a baseball team",
+		"is a public ",
+		"is a private ",
+		"is a university",
+		"is a college",
 		"is an annual",
 		"is a tournament",
 		"is a championship",
+		"is a competition",
+		"is a festival",
 		"is a stadium",
 		"is a city in",
+		"is a town in",
 		"is a country in",
+		"is a state in",
+		"is a province",
 		"is a television series",
 		"is a video game",
 		"is a company",
+		"is a corporation",
+		"is a brand",
+		"is a film",
+		"is an album",
+		"is a song",
+		"is a novel",
+		"is a book",
+		"is an organization",
+		"is an organisation",
 		"may refer to",
 		"disambiguation",
 	}
@@ -171,20 +210,24 @@ func isLikelyHumanBio(desc, extract string) bool {
 		}
 	}
 
-	humanMarkers := []string{
-		"(born ", "is a ", "was a ", "player", "athlete", "sprinter", "runner", "swimmer",
-		"cyclist", "gymnast", "boxer", "fighter", "wrestler", "grandmaster", "chess",
-		"skater", "climber", "thrower", "jumper", "medalist", "olympian", "champion",
-		"competitor", "driver", "racer", "golfer", "tennis", "footballer", "cricketer",
-		"scientist", "inventor", "researcher", "founder", "musician", "artist", "director",
-		"author", "activist", "mountaineer", "surfer", "weightlifter", "archer", "rower",
+	// Strong biographical proof: birth date/year or explicit individual profession
+	hasBirthMarker := strings.Contains(combined, "(born ") || strings.Contains(combined, "born ")
+	humanProfessions := []string{
+		"player", "athlete", "sprinter", "runner", "swimmer", "cyclist", "gymnast",
+		"boxer", "fighter", "wrestler", "grandmaster", "chess", "skater", "climber",
+		"thrower", "jumper", "medalist", "olympian", "paralympian", "competitor",
+		"driver", "racer", "golfer", "tennis", "footballer", "cricketer", "judoka",
+		"fencer", "skier", "diver", "archer", "rower", "weightlifter", "surfer",
+		"mountaineer", "scientist", "inventor", "researcher", "mathematician",
+		"physicist", "musician", "singer", "actor", "actress", "director", "author",
+		"activist", "coach", "badminton", "taekwondo", "javelin", "marathon",
 	}
-	for _, good := range humanMarkers {
-		if strings.Contains(combined, good) {
+	for _, prof := range humanProfessions {
+		if strings.Contains(combined, prof) {
 			return true
 		}
 	}
-	return false
+	return hasBirthMarker
 }
 
 func inferCountryAndCategory(desc, extract string) (string, string) {
@@ -241,7 +284,7 @@ func inferCountryAndCategory(desc, extract string) (string, string) {
 }
 
 func FetchWikipediaProfile(ctx context.Context, subject string) (*WikiDeepProfile, error) {
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second}
 	encoded := url.PathEscape(strings.ReplaceAll(strings.TrimSpace(subject), " ", "_"))
 	sumURL := fmt.Sprintf("https://en.wikipedia.org/api/rest_v1/page/summary/%s", encoded)
 
@@ -283,7 +326,7 @@ func FetchWikipediaProfile(ctx context.Context, subject string) (*WikiDeepProfil
 		return nil, fmt.Errorf("disambiguation or stub page")
 	}
 
-	isHuman := isLikelyHumanBio(sumData.Description, sumData.Extract)
+	isHuman := isLikelyHumanBio(sumData.Title, sumData.Description, sumData.Extract)
 	country, category := inferCountryAndCategory(sumData.Description, sumData.Extract)
 
 	pageURL := sumData.ContentURLs.Desktop.Page
@@ -385,73 +428,89 @@ type rssFeed struct {
 func DiscoverGoogleNews(ctx context.Context, queries []string) []DiscoveredCandidate {
 	if len(queries) == 0 {
 		queries = []string{
-			`"underdog" OR "unseeded" champion athlete breakthrough`,
-			`"world record" OR "first ever" medalist athlete victory`,
-			`"youngest" OR "against all odds" champion sports`,
+			`("underdog" OR "unseeded") champion athlete breakthrough when:7d`,
+			`("world record" OR "first ever") medalist athlete victory when:7d`,
+			`("youngest" OR "upset" OR "historic") champion sports OR chess when:7d`,
+			`("comeback" OR "breakthrough") scientist OR athlete OR prodigy when:7d`,
 		}
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
-	var out []DiscoveredCandidate
+	client := &http.Client{Timeout: 5 * time.Second}
+	var (
+		out []DiscoveredCandidate
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+	)
 
 	for _, q := range queries {
-		u := fmt.Sprintf("https://news.google.com/rss/search?q=%s&hl=en-US&gl=US&ceid=US:en", url.QueryEscape(q))
-		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", UserAgent)
-		resp, err := client.Do(req)
-		if err != nil || resp.StatusCode != 200 {
-			if resp != nil {
-				resp.Body.Close()
+		wg.Add(1)
+		go func(query string) {
+			defer wg.Done()
+			u := fmt.Sprintf("https://news.google.com/rss/search?q=%s&hl=en-US&gl=US&ceid=US:en", url.QueryEscape(query))
+			req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+			if err != nil {
+				return
 			}
-			continue
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		var feed rssFeed
-		if err := xml.Unmarshal(body, &feed); err != nil {
-			continue
-		}
-		for i, item := range feed.Channel.Items {
-			if i >= 8 {
-				break
-			}
-			rawTitle := strings.TrimSpace(item.Title)
-			headline := rawTitle
-			publisher := strings.TrimSpace(item.Source)
-			if idx := strings.LastIndex(rawTitle, " - "); idx > 0 {
-				headline = strings.TrimSpace(rawTitle[:idx])
-				if publisher == "" {
-					publisher = strings.TrimSpace(rawTitle[idx+3:])
+			req.Header.Set("User-Agent", UserAgent)
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode != 200 {
+				if resp != nil {
+					resp.Body.Close()
 				}
+				return
 			}
-			if publisher == "" {
-				publisher = "Google News"
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			var feed rssFeed
+			if err := xml.Unmarshal(body, &feed); err != nil {
+				return
 			}
-			eventDate := time.Now().Format("2006-01-02")
-			if t, err := time.Parse(time.RFC1123Z, item.PubDate); err == nil {
-				eventDate = t.Format("2006-01-02")
-			} else if t2, err2 := time.Parse(time.RFC1123, item.PubDate); err2 == nil {
-				eventDate = t2.Format("2006-01-02")
+			var local []DiscoveredCandidate
+			for i, item := range feed.Channel.Items {
+				if i >= 6 {
+					break
+				}
+				rawTitle := strings.TrimSpace(item.Title)
+				headline := rawTitle
+				publisher := strings.TrimSpace(item.Source)
+				if idx := strings.LastIndex(rawTitle, " - "); idx > 0 {
+					headline = strings.TrimSpace(rawTitle[:idx])
+					if publisher == "" {
+						publisher = strings.TrimSpace(rawTitle[idx+3:])
+					}
+				}
+				if publisher == "" {
+					publisher = "Google News"
+				}
+				eventDate := time.Now().Format("2006-01-02")
+				if t, err := time.Parse(time.RFC1123Z, item.PubDate); err == nil {
+					eventDate = t.Format("2006-01-02")
+				} else if t2, err2 := time.Parse(time.RFC1123, item.PubDate); err2 == nil {
+					eventDate = t2.Format("2006-01-02")
+				}
+				local = append(local, DiscoveredCandidate{
+					SourceID:    "src-google-news",
+					PersonName:  ExtractPersonFromHeadline(headline),
+					Category:    "Sports & Competition",
+					Country:     "Global",
+					EventTitle:  headline,
+					EventDate:   eventDate,
+					Achievement: headline,
+					Headline:    headline,
+					SourceURL:   item.Link,
+					Publisher:   publisher,
+					Platform:    "News",
+					Summary:     fmt.Sprintf("Live coverage from %s: %s", publisher, headline),
+				})
 			}
-			out = append(out, DiscoveredCandidate{
-				SourceID:    "src-google-news",
-				PersonName:  ExtractPersonFromHeadline(headline),
-				Category:    "Sports & Competition",
-				Country:     "Global",
-				EventTitle:  headline,
-				EventDate:   eventDate,
-				Achievement: headline,
-				Headline:    headline,
-				SourceURL:   item.Link,
-				Publisher:   publisher,
-				Platform:    "News",
-				Summary:     fmt.Sprintf("Live coverage from %s: %s", publisher, headline),
-			})
-		}
+			if len(local) > 0 {
+				mu.Lock()
+				out = append(out, local...)
+				mu.Unlock()
+			}
+		}(q)
 	}
+	wg.Wait()
 	return out
 }
 
@@ -466,77 +525,92 @@ func DiscoverRedditBreakouts(ctx context.Context) []DiscoveredCandidate {
 		"NextFuckingLevel",
 		"UpliftingNews",
 	}
-	client := &http.Client{Timeout: 7 * time.Second}
-	var out []DiscoveredCandidate
+	client := &http.Client{Timeout: 5 * time.Second}
+	var (
+		out []DiscoveredCandidate
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+	)
 
 	for _, sub := range subreddits {
-		u := fmt.Sprintf("https://www.reddit.com/r/%s/top.json?t=week&limit=8", sub)
-		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", WikiUserAgent)
-		resp, err := client.Do(req)
-		if err != nil || resp.StatusCode != 200 {
-			if resp != nil {
-				resp.Body.Close()
+		wg.Add(1)
+		go func(subreddit string) {
+			defer wg.Done()
+			u := fmt.Sprintf("https://www.reddit.com/r/%s/top.json?t=week&limit=6", subreddit)
+			req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+			if err != nil {
+				return
 			}
-			continue
-		}
-		var payload struct {
-			Data struct {
-				Children []struct {
-					Data struct {
-						ID          string  `json:"id"`
-						Title       string  `json:"title"`
-						Author      string  `json:"author"`
-						Subreddit   string  `json:"subreddit"`
-						Permalink   string  `json:"permalink"`
-						Ups         int64   `json:"ups"`
-						NumComments int64   `json:"num_comments"`
-						CreatedUTC  float64 `json:"created_utc"`
-					} `json:"data"`
-				} `json:"children"`
-			} `json:"data"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&payload)
-		resp.Body.Close()
+			req.Header.Set("User-Agent", WikiUserAgent)
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode != 200 {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				return
+			}
+			var payload struct {
+				Data struct {
+					Children []struct {
+						Data struct {
+							ID          string  `json:"id"`
+							Title       string  `json:"title"`
+							Author      string  `json:"author"`
+							Subreddit   string  `json:"subreddit"`
+							Permalink   string  `json:"permalink"`
+							Ups         int64   `json:"ups"`
+							NumComments int64   `json:"num_comments"`
+							CreatedUTC  float64 `json:"created_utc"`
+						} `json:"data"`
+					} `json:"children"`
+				} `json:"data"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&payload)
+			resp.Body.Close()
 
-		for _, c := range payload.Data.Children {
-			p := c.Data
-			if p.Title == "" || p.Ups < 20 {
-				continue
-			}
-			dt := time.Unix(int64(p.CreatedUTC), 0).Format("2006-01-02")
-			postURL := fmt.Sprintf("https://www.reddit.com%s", p.Permalink)
-			out = append(out, DiscoveredCandidate{
-				SourceID:    "src-reddit",
-				PersonName:  ExtractPersonFromHeadline(p.Title),
-				Category:    "Sports & Competition",
-				Country:     "Global",
-				EventTitle:  p.Title,
-				EventDate:   dt,
-				Achievement: p.Title,
-				Headline:    p.Title,
-				SourceURL:   postURL,
-				Publisher:   fmt.Sprintf("Reddit r/%s", p.Subreddit),
-				Platform:    "Reddit",
-				Summary:     fmt.Sprintf("Live Reddit breakout thread on r/%s (%d upvotes, %d comments): %s", p.Subreddit, p.Ups, p.NumComments, p.Title),
-				Social: &SocialMetric{
+			var local []DiscoveredCandidate
+			for _, c := range payload.Data.Children {
+				p := c.Data
+				if p.Title == "" || p.Ups < 20 {
+					continue
+				}
+				dt := time.Unix(int64(p.CreatedUTC), 0).Format("2006-01-02")
+				postURL := fmt.Sprintf("https://www.reddit.com%s", p.Permalink)
+				local = append(local, DiscoveredCandidate{
+					SourceID:    "src-reddit",
+					PersonName:  ExtractPersonFromHeadline(p.Title),
+					Category:    "Sports & Competition",
+					Country:     "Global",
+					EventTitle:  p.Title,
+					EventDate:   dt,
+					Achievement: p.Title,
+					Headline:    p.Title,
+					SourceURL:   postURL,
+					Publisher:   fmt.Sprintf("Reddit r/%s", p.Subreddit),
 					Platform:    "Reddit",
-					ExternalID:  "reddit-" + p.ID,
-					Author:      "u/" + p.Author,
-					Subreddit:   "r/" + p.Subreddit,
-					Content:     p.Title,
-					URL:         postURL,
-					Upvotes:     p.Ups,
-					Comments:    p.NumComments,
-					Shares:      p.NumComments / 4,
-					PublishedAt: dt,
-				},
-			})
-		}
+					Summary:     fmt.Sprintf("Live Reddit breakout thread on r/%s (%d upvotes, %d comments): %s", p.Subreddit, p.Ups, p.NumComments, p.Title),
+					Social: &SocialMetric{
+						Platform:    "Reddit",
+						ExternalID:  "reddit-" + p.ID,
+						Author:      "u/" + p.Author,
+						Subreddit:   "r/" + p.Subreddit,
+						Content:     p.Title,
+						URL:         postURL,
+						Upvotes:     p.Ups,
+						Comments:    p.NumComments,
+						Shares:      p.NumComments / 4,
+						PublishedAt: dt,
+					},
+				})
+			}
+			if len(local) > 0 {
+				mu.Lock()
+				out = append(out, local...)
+				mu.Unlock()
+			}
+		}(sub)
 	}
+	wg.Wait()
 	return out
 }
 
@@ -544,132 +618,176 @@ func DiscoverRedditBreakouts(ctx context.Context) []DiscoveredCandidate {
 type trendsRssFeed struct {
 	Channel struct {
 		Items []struct {
-			Title       string `xml:"title"`
-			Link        string `xml:"link"`
-			PubDate     string `xml:"pubDate"`
-			Traffic     string `xml:"approx_traffic"`
-			NewsTitle   string `xml:"news_item>news_item_title"`
-			NewsURL     string `xml:"news_item>news_item_url"`
-			NewsSource  string `xml:"news_item>news_item_source"`
+			Title      string `xml:"title"`
+			Link       string `xml:"link"`
+			PubDate    string `xml:"pubDate"`
+			Traffic    string `xml:"approx_traffic"`
+			NewsTitle  string `xml:"news_item>news_item_title"`
+			NewsURL    string `xml:"news_item>news_item_url"`
+			NewsSource string `xml:"news_item>news_item_source"`
 		} `xml:"item"`
 	} `xml:"channel"`
 }
 
 func DiscoverGoogleTrends(ctx context.Context) []DiscoveredCandidate {
 	geos := []string{"US", "GB", "IN", "CA", "AU"}
-	client := &http.Client{Timeout: 7 * time.Second}
-	var out []DiscoveredCandidate
+	client := &http.Client{Timeout: 5 * time.Second}
+	var (
+		out []DiscoveredCandidate
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+	)
 
 	for _, geo := range geos {
-		u := fmt.Sprintf("https://trends.google.com/trending/rss?geo=%s", geo)
-		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", UserAgent)
-		resp, err := client.Do(req)
-		if err != nil || resp.StatusCode != 200 {
-			if resp != nil {
-				resp.Body.Close()
+		wg.Add(1)
+		go func(region string) {
+			defer wg.Done()
+			u := fmt.Sprintf("https://trends.google.com/trending/rss?geo=%s", region)
+			req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+			if err != nil {
+				return
 			}
-			continue
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+			req.Header.Set("User-Agent", UserAgent)
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode != 200 {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				return
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
 
-		var feed trendsRssFeed
-		if err := xml.Unmarshal(body, &feed); err != nil {
-			continue
-		}
-		for i, item := range feed.Channel.Items {
-			if i >= 10 {
-				break
+			var feed trendsRssFeed
+			if err := xml.Unmarshal(body, &feed); err != nil {
+				return
 			}
-			trendTitle := strings.TrimSpace(item.Title)
-			newsTitle := strings.TrimSpace(item.NewsTitle)
-			newsTitle = strings.ReplaceAll(newsTitle, "&#39;", "'")
-			newsTitle = strings.ReplaceAll(newsTitle, "&quot;", `"`)
-			if newsTitle == "" {
-				newsTitle = fmt.Sprintf("Breakout search surge (%s searches) for %s", item.Traffic, trendTitle)
+			var local []DiscoveredCandidate
+			for i, item := range feed.Channel.Items {
+				if i >= 6 {
+					break
+				}
+				trendTitle := strings.TrimSpace(item.Title)
+				newsTitle := strings.TrimSpace(item.NewsTitle)
+				newsTitle = strings.ReplaceAll(newsTitle, "&#39;", "'")
+				newsTitle = strings.ReplaceAll(newsTitle, "&quot;", `"`)
+				if newsTitle == "" {
+					newsTitle = fmt.Sprintf("Breakout search surge (%s searches) for %s", item.Traffic, trendTitle)
+				}
+				link := strings.TrimSpace(item.NewsURL)
+				if link == "" {
+					link = "https://trends.google.com/trending?geo=" + region
+				}
+				pub := strings.TrimSpace(item.NewsSource)
+				if pub == "" {
+					pub = fmt.Sprintf("Google Trends (%s • %s)", region, item.Traffic)
+				} else {
+					pub = fmt.Sprintf("%s (Google Trends %s)", pub, item.Traffic)
+				}
+				local = append(local, DiscoveredCandidate{
+					SourceID:    "src-google-trends",
+					PersonName:  trendTitle,
+					Category:    "Global Breakout Trend",
+					Country:     region,
+					EventTitle:  newsTitle,
+					EventDate:   time.Now().Format("2006-01-02"),
+					Achievement: newsTitle,
+					Headline:    newsTitle,
+					SourceURL:   link,
+					Publisher:   pub,
+					Platform:    "Google Trends",
+					Summary:     fmt.Sprintf("Google Trends surge (%s searches in %s): %s", item.Traffic, region, newsTitle),
+				})
 			}
-			link := strings.TrimSpace(item.NewsURL)
-			if link == "" {
-				link = "https://trends.google.com/trending?geo=" + geo
+			if len(local) > 0 {
+				mu.Lock()
+				out = append(out, local...)
+				mu.Unlock()
 			}
-			pub := strings.TrimSpace(item.NewsSource)
-			if pub == "" {
-				pub = fmt.Sprintf("Google Trends (%s • %s)", geo, item.Traffic)
-			} else {
-				pub = fmt.Sprintf("%s (Google Trends %s)", pub, item.Traffic)
-			}
-			out = append(out, DiscoveredCandidate{
-				SourceID:    "src-google-trends",
-				PersonName:  trendTitle,
-				Category:    "Global Breakout Trend",
-				Country:     geo,
-				EventTitle:  newsTitle,
-				EventDate:   time.Now().Format("2006-01-02"),
-				Achievement: newsTitle,
-				Headline:    newsTitle,
-				SourceURL:   link,
-				Publisher:   pub,
-				Platform:    "Google Trends",
-				Summary:     fmt.Sprintf("Google Trends surge (%s searches in %s): %s", item.Traffic, geo, newsTitle),
-			})
-		}
+		}(geo)
 	}
+	wg.Wait()
 	return out
 }
 
-// 4. DYNAMIC WIKIPEDIA SEARCH & BREAKOUT CONNECTOR (Zero Hardcoded Names)
+// 4. DYNAMIC WIKIPEDIA SEARCH & BREAKOUT CONNECTOR (Zero Hardcoded Names, Concurrent)
 func DiscoverWikipediaBreakouts(ctx context.Context, queries []string) []DiscoveredCandidate {
 	if len(queries) == 0 {
+		year := time.Now().Year()
 		queries = []string{
-			"world champion youngest biography medalist",
+			fmt.Sprintf("world champion youngest medalist %d OR %d", year, year-1),
+			fmt.Sprintf("unseeded champion upset victory %d OR %d", year, year-1),
 			"olympic record gold medalist biography",
-			"unseeded champion tournament victory biography",
 		}
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
-	var out []DiscoveredCandidate
-	seen := map[string]bool{}
+	client := &http.Client{Timeout: 5 * time.Second}
+	var (
+		titles []string
+		mu     sync.Mutex
+		seen   = map[string]bool{}
+		wg     sync.WaitGroup
+	)
 
 	for _, q := range queries {
-		u := fmt.Sprintf("https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=%s&srlimit=6&format=json", url.QueryEscape(q))
-		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", WikiUserAgent)
-		resp, err := client.Do(req)
-		if err != nil || resp.StatusCode != 200 {
-			if resp != nil {
-				resp.Body.Close()
+		wg.Add(1)
+		go func(query string) {
+			defer wg.Done()
+			u := fmt.Sprintf("https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=%s&srlimit=5&format=json", url.QueryEscape(query))
+			req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+			if err != nil {
+				return
 			}
-			continue
-		}
-		var searchRes struct {
-			Query struct {
-				Search []struct {
-					Title   string `json:"title"`
-					Snippet string `json:"snippet"`
-				} `json:"search"`
-			} `json:"query"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&searchRes)
-		resp.Body.Close()
+			req.Header.Set("User-Agent", WikiUserAgent)
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode != 200 {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				return
+			}
+			var searchRes struct {
+				Query struct {
+					Search []struct {
+						Title   string `json:"title"`
+						Snippet string `json:"snippet"`
+					} `json:"search"`
+				} `json:"query"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&searchRes)
+			resp.Body.Close()
 
-		for _, hit := range searchRes.Query.Search {
-			title := strings.TrimSpace(hit.Title)
-			if seen[title] || len(strings.Fields(title)) < 2 || len(strings.Fields(title)) > 3 {
-				continue
+			mu.Lock()
+			for _, hit := range searchRes.Query.Search {
+				title := strings.TrimSpace(hit.Title)
+				words := strings.Fields(title)
+				if !seen[title] && len(words) >= 2 && len(words) <= 3 {
+					seen[title] = true
+					titles = append(titles, title)
+				}
 			}
-			prof, err := FetchWikipediaProfile(ctx, title)
+			mu.Unlock()
+		}(q)
+	}
+	wg.Wait()
+
+	if len(titles) > 8 {
+		titles = titles[:8]
+	}
+
+	var out []DiscoveredCandidate
+	sem := make(chan struct{}, 4)
+	for _, title := range titles {
+		wg.Add(1)
+		go func(t string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			prof, err := FetchWikipediaProfile(ctx, t)
 			if err != nil || prof == nil || !prof.IsHuman || prof.Summary == "" {
-				continue
+				return
 			}
-			seen[title] = true
 			firstSentence := strings.Split(prof.Summary, ". ")[0]
+			mu.Lock()
 			out = append(out, DiscoveredCandidate{
 				SourceID:    "src-wikipedia",
 				PersonName:  prof.Title,
@@ -686,8 +804,10 @@ func DiscoverWikipediaBreakouts(ctx context.Context, queries []string) []Discove
 				ImageURL:    prof.ImageURL,
 				WikiExtract: prof.Summary,
 			})
-		}
+			mu.Unlock()
+		}(title)
 	}
+	wg.Wait()
 	return out
 }
 
@@ -728,7 +848,7 @@ func parseRelativeHours(pubText string) float64 {
 }
 
 func LookupYouTubeVideoForPerson(ctx context.Context, personName string, youtubeAPIKey string) (*VideoMetric, error) {
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second}
 
 	// 1. If YOUTUBE_API_KEY is configured, use official YouTube Data API v3
 	if strings.TrimSpace(youtubeAPIKey) != "" {

@@ -3,9 +3,10 @@ const DEFAULT_DASH = 'https://trendscout-iota.vercel.app';
 
 async function getConfig() {
   const stored = await chrome.storage.local.get(['apiBaseUrl', 'dashboardBaseUrl', 'authToken', 'userEmail']);
+  const clean = (v, fb) => String(v || fb).trim().replace(/\/+$/, '') || fb;
   return {
-    apiBase: stored.apiBaseUrl || DEFAULT_API,
-    dashBase: stored.dashboardBaseUrl || DEFAULT_DASH,
+    apiBase: clean(stored.apiBaseUrl, DEFAULT_API),
+    dashBase: clean(stored.dashboardBaseUrl, DEFAULT_DASH),
     token: stored.authToken || '',
     userEmail: stored.userEmail || 'producer@trendscout.studio',
   };
@@ -143,6 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
       await fetch(`${apiBase}/api/discoveries/scan`, { method: 'POST', headers, body: '{}' });
+      chrome.runtime.sendMessage({ type: 'POLL_NOW' }).catch(() => {});
       await loadPopupData();
     } finally {
       btn.textContent = 'Scan Now';

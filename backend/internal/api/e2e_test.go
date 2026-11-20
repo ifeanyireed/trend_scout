@@ -37,6 +37,19 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
+	// 0. Verify Live Discovery Scan endpoint executes cleanly & logs real source runs
+	scanResp, err := http.Post(server.URL+"/api/discoveries/scan", "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil || scanResp.StatusCode != 200 {
+		t.Fatalf("Live discovery scan failed: err=%v status=%d", err, scanResp.StatusCode)
+	}
+	var scanData map[string]any
+	_ = json.NewDecoder(scanResp.Body).Decode(&scanData)
+	scanResp.Body.Close()
+	t.Logf("Live scan telemetry: %+v", scanData)
+	if okVal, _ := scanData["ok"].(bool); !okVal {
+		t.Fatalf("Expected ok=true from /api/discoveries/scan, got %+v", scanData)
+	}
+
 	// 1. Test Authentication
 	loginBody, _ := json.Marshal(map[string]string{
 		"email":    "producer@trendscout.studio",
@@ -144,7 +157,7 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 	}
 
 	// 5. Test Complete Production Package Export + FFmpeg 16:9 Video Assembly
-	expResp, err := http.Post(server.URL+"/api/projects/proj-gukesh-world-champ/assemble-video", "application/json", bytes.NewReader([]byte(`{}`)))
+	expResp, err := http.Post(server.URL+"/api/projects/"+testProjectID+"/assemble-video", "application/json", bytes.NewReader([]byte(`{}`)))
 	if err != nil || expResp.StatusCode != 200 {
 		t.Fatalf("Export & FFmpeg video assembly failed: err=%v status=%d", err, expResp.StatusCode)
 	}

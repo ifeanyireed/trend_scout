@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -100,68 +101,478 @@ func ResolvePersonAndEvent(ctx context.Context, cand connectors.DiscoveredCandid
 	return personID, eventID, nil
 }
 
-// 2. DISCOVERY AGENT
+// 2. LIVE MULTI-PLATFORM DISCOVERY AGENT
+type DiscoveryCycleResult struct {
+	NewDiscoveries    int            `json:"newDiscoveries"`
+	UpdatedExisting   int            `json:"updatedExisting"`
+	CandidatesFetched int            `json:"candidatesFetched"`
+	VerifiedPeople    int            `json:"verifiedPeople"`
+	SourcesScanned    map[string]int `json:"sourcesScanned"`
+	UsedGemini        bool           `json:"usedGemini"`
+	DurationMs        int64          `json:"durationMs"`
+}
+
 func RunDiscoveryCycle(ctx context.Context, queries []string) (int, error) {
-	var allCandidates []connectors.DiscoveredCandidate
-	allCandidates = append(allCandidates, connectors.DiscoverWikipediaBreakouts(ctx, nil)...)
-	allCandidates = append(allCandidates, connectors.DiscoverGoogleNews(ctx, queries)...)
-	allCandidates = append(allCandidates, connectors.DiscoverRedditBreakouts(ctx)...)
+	res, err := RunLiveDiscoveryCycle(ctx, queries)
+	if err != nil {
+		return 0, err
+	}
+	return res.NewDiscoveries, nil
+}
 
-	newCount := 0
-	for _, cand := range allCandidates {
-		if strings.TrimSpace(cand.PersonName) == "" {
-			continue
+func recordSourceRun(ctx context.Context, sourceID string, itemsFound int, newDiscoveries int, errMsg string) {
+	status := "completed"
+	if errMsg != "" {
+		status = "degraded"
+	}
+	_, _ = db.DB.ExecContext(ctx, `
+		INSERT INTO source_runs (id, source_id, status, items_found, new_discoveries, started_at, completed_at, error_message)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), NULLIF($6, ''))
+	`, "srun-"+uuid.NewString()[:8], sourceID, status, itemsFound, newDiscoveries, errMsg)
+	_, _ = db.DB.ExecContext(ctx, `
+		UPDATE connected_sources
+		SET last_scan_at = NOW(), quota_used = quota_used + 1, status = 'ready', updated_at = NOW()
+		WHERE id = $1 AND enabled = TRUE
+	`, sourceID)
+}
+
+func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCycleResult, error) {
+	start := time.Now()
+	result := &DiscoveryCycleResult{
+		SourcesScanned: map[string]int{
+			"src-google-news":   0,
+			"src-google-trends": 0,
+			"src-reddit":        0,
+			"src-wikipedia":     0,
+			"src-youtube":       0,
+		},
+	}
+
+	// Step 1: Fetch all 4 live discovery sources concurrently with a strict timeout budget
+	fetchCtx, cancelFetch := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelFetch()
+
+	var (
+		newsCands   []connectors.DiscoveredCandidate
+		trendsCands []connectors.DiscoveredCandidate
+		redditCands []connectors.DiscoveredCandidate
+		wikiCands   []connectors.DiscoveredCandidate
+		fetchWG     sync.WaitGroup
+	)
+
+	fetchWG.Add(4)
+	go func() {
+		defer fetchWG.Done()
+		newsCands = connectors.DiscoverGoogleNews(fetchCtx, queries)
+	}()
+	go func() {
+		defer fetchWG.Done()
+		trendsCands = connectors.DiscoverGoogleTrends(fetchCtx)
+	}()
+	go func() {
+		defer fetchWG.Done()
+		redditCands = connectors.DiscoverRedditBreakouts(fetchCtx)
+	}()
+	go func() {
+		defer fetchWG.Done()
+		wikiCands = connectors.DiscoverWikipediaBreakouts(fetchCtx, nil)
+	}()
+	fetchWG.Wait()
+
+	result.SourcesScanned["src-google-news"] = len(newsCands)
+	result.SourcesScanned["src-google-trends"] = len(trendsCands)
+	result.SourcesScanned["src-reddit"] = len(redditCands)
+	result.SourcesScanned["src-wikipedia"] = len(wikiCands)
+
+	// Combine raw non-Wikipedia signals for Gemini human-subject extraction
+	var rawSignals []connectors.DiscoveredCandidate
+	rawSignals = append(rawSignals, newsCands...)
+	rawSignals = append(rawSignals, trendsCands...)
+	rawSignals = append(rawSignals, redditCands...)
+	result.CandidatesFetched = len(rawSignals) + len(wikiCands)
+
+	// Step 2: Use Gemini AI (single batched call) to extract verified human subjects from live headlines
+	var curated []connectors.DiscoveredCandidate
+	if len(rawSignals) > 0 && ai.HasGeminiKey(ctx) {
+		limit := len(rawSignals)
+		if limit > 30 {
+			limit = 30
 		}
-		personID, eventID, err := ResolvePersonAndEvent(ctx, cand)
-		if err != nil {
-			continue
+		var inputs []ai.RawSignalInput
+		for i := 0; i < limit; i++ {
+			inputs = append(inputs, ai.RawSignalInput{
+				Index:     i,
+				Headline:  rawSignals[i].Headline,
+				Summary:   rawSignals[i].Summary,
+				Platform:  rawSignals[i].Platform,
+				Publisher: rawSignals[i].Publisher,
+			})
 		}
-
-		var discID string
-		err = db.DB.QueryRowContext(ctx, `
-			SELECT id FROM discoveries WHERE person_id = $1 LIMIT 1
-		`, personID).Scan(&discID)
-
-		if err == sql.ErrNoRows {
-			discID = "disc-" + uuid.NewString()[:8]
-			stage := "Accelerating"
-			if newCount%3 == 1 {
-				stage = "Major Viral Opportunity"
-			} else if newCount%3 == 2 {
-				stage = "Emerging"
+		gemCtx, cancelGem := context.WithTimeout(ctx, 6*time.Second)
+		extracted, errGem := ai.ExtractCandidatesWithGemini(gemCtx, inputs)
+		cancelGem()
+		if errGem == nil && len(extracted) > 0 {
+			result.UsedGemini = true
+			for idx, ext := range extracted {
+				if idx < 0 || idx >= limit {
+					continue
+				}
+				c := rawSignals[idx]
+				c.PersonName = strings.TrimSpace(ext.PersonName)
+				c.Aliases = ext.Aliases
+				if strings.TrimSpace(ext.Category) != "" {
+					c.Category = strings.TrimSpace(ext.Category)
+				}
+				if strings.TrimSpace(ext.Country) != "" {
+					c.Country = strings.TrimSpace(ext.Country)
+				}
+				if strings.TrimSpace(ext.EventTitle) != "" {
+					c.EventTitle = strings.TrimSpace(ext.EventTitle)
+				}
+				if strings.TrimSpace(ext.Achievement) != "" {
+					c.Achievement = strings.TrimSpace(ext.Achievement)
+				}
+				curated = append(curated, c)
 			}
-			_, err = db.DB.ExecContext(ctx, `
-				INSERT INTO discoveries (id, person_id, event_id, source_id, headline, achievement, source_url, publisher, trend_stage, independent_coverage_count, research_status, status)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 8, 'completed', 'active')
-			`, discID, personID, eventID, cand.SourceID, cand.Headline, cand.Achievement, cand.SourceURL, cand.Publisher, stage)
-			if err != nil {
-				continue
-			}
-			newCount++
-
-			// Persist article & source
-			_, _ = db.DB.ExecContext(ctx, `
-				INSERT INTO news_articles (id, person_id, discovery_id, title, url, publisher, author, summary, published_at)
-				VALUES ($1, $2, $3, $4, $5, $6, 'Editorial Desk', $7, $8)
-				ON CONFLICT (url) DO NOTHING
-			`, "news-"+uuid.NewString()[:8], personID, discID, cand.Headline, cand.SourceURL, cand.Publisher, cand.Summary, cand.EventDate)
-
-			// Trigger Underdog Assessment, Trend Snapshot & Deep Research
-			_ = RunUnderdogAssessment(ctx, personID, discID, cand)
-			_ = RecordTrendObservation(ctx, discID, personID, stage, 285000, 14200, 312000, 4.6, 9)
-			_, _ = RunDeepResearchAndVerification(ctx, personID, discID)
-		} else {
-			_, _ = db.DB.ExecContext(ctx, `
-				UPDATE discoveries SET independent_coverage_count = independent_coverage_count + 1, updated_at = NOW() WHERE id = $1
-			`, discID)
 		}
 	}
 
-	_, _ = db.DB.ExecContext(ctx, `
-		UPDATE connected_sources SET last_scan_at = NOW(), quota_used = quota_used + 1, status = 'ready', updated_at = NOW() WHERE enabled = TRUE
-	`)
+	// Fallback if Gemini was unavailable or returned zero items: keep regex-extracted raw signals (will be Wikipedia-verified below)
+	if !result.UsedGemini {
+		for _, c := range rawSignals {
+			name := strings.TrimSpace(c.PersonName)
+			words := strings.Fields(name)
+			if len(words) >= 2 && len(words) <= 3 {
+				curated = append(curated, c)
+			}
+		}
+	}
 
-	return newCount, nil
+	// Cap raw non-Wikipedia candidates so live Wikipedia breakout subjects are always represented in the batch
+	if len(curated) > 12 {
+		curated = curated[:12]
+	}
+	// Always include live Wikipedia breakout human subjects as high-confidence candidates
+	curated = append(curated, wikiCands...)
+
+	// Step 3: Batch-load existing people/discoveries in ONE query & separate existing vs new candidates
+	existingBySlug := map[string]string{}
+	if exRows, errEx := db.DB.QueryContext(ctx, `
+		SELECT p.slug, d.id FROM discoveries d JOIN people p ON p.id = d.person_id
+	`); errEx == nil && exRows != nil {
+		for exRows.Next() {
+			var sl, did string
+			if exRows.Scan(&sl, &did) == nil {
+				existingBySlug[sl] = did
+			}
+		}
+		exRows.Close()
+	}
+
+	seenSlugs := map[string]bool{}
+	var newCandidates []connectors.DiscoveredCandidate
+	var existingUpdates []struct {
+		discID string
+		cand   connectors.DiscoveredCandidate
+	}
+
+	for _, cand := range curated {
+		name := strings.TrimSpace(cand.PersonName)
+		if name == "" {
+			continue
+		}
+		slug := Slugify(name)
+		if slug == "" || seenSlugs[slug] {
+			continue
+		}
+		seenSlugs[slug] = true
+
+		if existingDiscID, exists := existingBySlug[slug]; exists && existingDiscID != "" {
+			existingUpdates = append(existingUpdates, struct {
+				discID string
+				cand   connectors.DiscoveredCandidate
+			}{discID: existingDiscID, cand: cand})
+		} else {
+			newCandidates = append(newCandidates, cand)
+		}
+	}
+
+	// Increment coverage on existing live discoveries
+	for _, upd := range existingUpdates {
+		_, _ = db.DB.ExecContext(ctx, `
+			UPDATE discoveries SET independent_coverage_count = independent_coverage_count + 1, updated_at = NOW() WHERE id = $1
+		`, upd.discID)
+		result.UpdatedExisting++
+	}
+
+	// Step 4: Cap new enrichments per scan so serverless requests always finish cleanly
+	const maxNewPerScan = 8
+	if len(newCandidates) > 20 {
+		newCandidates = newCandidates[:20]
+	}
+
+	aiCfg := ai.GetAIConfig(ctx)
+
+	type enrichedCandidate struct {
+		cand     connectors.DiscoveredCandidate
+		wikiProf *connectors.WikiDeepProfile
+		valid    bool
+	}
+
+	// Concurrently enrich candidates with Wikipedia biographical verification + YouTube velocity lookup
+	enriched := make([]enrichedCandidate, len(newCandidates))
+	var enrichWG sync.WaitGroup
+	sem := make(chan struct{}, 4)
+
+	for i, cand := range newCandidates {
+		enrichWG.Add(1)
+		go func(idx int, c connectors.DiscoveredCandidate) {
+			defer enrichWG.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			eCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
+			defer cancel()
+
+			var wikiProf *connectors.WikiDeepProfile
+			if c.SourceID == "src-wikipedia" && c.WikiExtract != "" {
+				// Fetch full sections from Wikipedia for deep timeline
+				if p, err := connectors.FetchWikipediaProfile(eCtx, c.PersonName); err == nil && p != nil && p.IsHuman {
+					wikiProf = p
+				}
+			} else {
+				if p, err := connectors.FetchWikipediaProfile(eCtx, c.PersonName); err == nil && p != nil && p.IsHuman {
+					wikiProf = p
+					if p.Title != "" {
+						c.PersonName = p.Title
+					}
+					if p.Summary != "" {
+						c.WikiExtract = p.Summary
+						if len(c.Summary) < 80 {
+							c.Summary = p.Summary
+						}
+					}
+					if p.ImageURL != "" && c.ImageURL == "" {
+						c.ImageURL = p.ImageURL
+					}
+					if c.Country == "Global" || len(c.Country) <= 2 {
+						if p.Country != "" {
+							c.Country = p.Country
+						}
+					}
+					if c.Category == "Sports & Competition" || c.Category == "Global Breakout Trend" {
+						if p.Category != "" {
+							c.Category = p.Category
+						}
+					}
+				} else if !result.UsedGemini {
+					// Without Gemini verification, require Wikipedia human-bio confirmation to avoid garbage names
+					return
+				}
+			}
+
+			// Live YouTube velocity lookup
+			if vid, err := connectors.LookupYouTubeVideoForPerson(eCtx, c.PersonName, aiCfg.YouTubeAPIKey); err == nil && vid != nil {
+				c.Video = vid
+			}
+
+			enriched[idx] = enrichedCandidate{
+				cand:     c,
+				wikiProf: wikiProf,
+				valid:    true,
+			}
+		}(i, cand)
+	}
+	enrichWG.Wait()
+
+	// Step 5: Persist up to maxNewPerScan verified live discoveries CONCURRENTLY
+	var toPersist []enrichedCandidate
+	seenFinal := map[string]bool{}
+	for _, item := range enriched {
+		if !item.valid {
+			continue
+		}
+		sl := Slugify(item.cand.PersonName)
+		if sl == "" || seenFinal[sl] || existingBySlug[sl] != "" {
+			continue
+		}
+		seenFinal[sl] = true
+		result.VerifiedPeople++
+		if len(toPersist) < maxNewPerScan {
+			toPersist = append(toPersist, item)
+		}
+	}
+
+	var (
+		persistMu    sync.Mutex
+		persistWG    sync.WaitGroup
+		perSourceNew = map[string]int{}
+		ytFound      int
+		persistSem   = make(chan struct{}, 5)
+	)
+
+	for _, item := range toPersist {
+		persistWG.Add(1)
+		go func(it enrichedCandidate) {
+			defer persistWG.Done()
+			persistSem <- struct{}{}
+			defer func() { <-persistSem }()
+
+			cand := it.cand
+			if cand.Video != nil {
+				persistMu.Lock()
+				ytFound++
+				persistMu.Unlock()
+			}
+
+			personID, eventID, err := ResolvePersonAndEvent(ctx, cand)
+			if err != nil {
+				return
+			}
+
+			var existingID string
+			if errCheck := db.DB.QueryRowContext(ctx, `SELECT id FROM discoveries WHERE person_id = $1 LIMIT 1`, personID).Scan(&existingID); errCheck == nil && existingID != "" {
+				_, _ = db.DB.ExecContext(ctx, `UPDATE discoveries SET independent_coverage_count = independent_coverage_count + 1, updated_at = NOW() WHERE id = $1`, existingID)
+				persistMu.Lock()
+				result.UpdatedExisting++
+				persistMu.Unlock()
+				return
+			}
+
+			// Compute real velocity & trend stage from live YouTube/Reddit/News signals
+			var viewsTotal int64 = 48000
+			var vph float64 = 1850
+			var chanRel float64 = 2.6
+			indCov := 3
+			if cand.Video != nil && cand.Video.Views > 0 {
+				viewsTotal = cand.Video.Views
+				vph = cand.Video.ViewsPerHour
+				chanRel = cand.Video.ChannelMultiplier
+				indCov += 3
+			}
+			if cand.Social != nil && cand.Social.Upvotes > 0 {
+				if cand.Video == nil {
+					viewsTotal = cand.Social.Upvotes * 42
+					vph = math.Max(450, math.Round(float64(cand.Social.Upvotes)*1.9))
+					chanRel = math.Round((2.0+math.Log10(math.Max(10, float64(cand.Social.Upvotes)))*0.85)*10) / 10
+				}
+				indCov += 2
+			}
+			if cand.WikiExtract != "" {
+				indCov += 2
+			}
+
+			stage := "Emerging"
+			switch {
+			case vph >= 12000 || (viewsTotal >= 350000 && chanRel >= 4.0):
+				stage = "Major Viral Opportunity"
+			case vph >= 3500 || viewsTotal >= 100000:
+				stage = "Accelerating"
+			case vph >= 900 || indCov >= 5:
+				stage = "Emerging"
+			default:
+				stage = "Early Whisper"
+			}
+
+			discID := "disc-" + uuid.NewString()[:8]
+			_, err = db.DB.ExecContext(ctx, `
+				INSERT INTO discoveries (id, person_id, event_id, source_id, headline, achievement, source_url, publisher, trend_stage, independent_coverage_count, research_status, status)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed', 'active')
+			`, discID, personID, eventID, cand.SourceID, cand.Headline, cand.Achievement, cand.SourceURL, cand.Publisher, stage, indCov)
+			if err != nil {
+				return
+			}
+
+			persistMu.Lock()
+			result.NewDiscoveries++
+			perSourceNew[cand.SourceID]++
+			persistMu.Unlock()
+
+			// Persist live article, video, and social post records
+			_, _ = db.DB.ExecContext(ctx, `
+				INSERT INTO news_articles (id, person_id, discovery_id, title, url, publisher, author, summary, published_at)
+				VALUES ($1, $2, $3, $4, $5, $6, 'Live Discovery Feed', $7, $8)
+				ON CONFLICT (url) DO NOTHING
+			`, "news-"+uuid.NewString()[:8], personID, discID, cand.Headline, cand.SourceURL, cand.Publisher, cand.Summary, cand.EventDate)
+
+			if cand.Video != nil {
+				_, _ = db.DB.ExecContext(ctx, `
+					INSERT INTO videos (
+						id, person_id, discovery_id, external_video_id, platform, title, channel_name,
+						channel_subscribers, url, views, likes, comments, views_per_hour, views_per_day,
+						channel_relative_multiplier, published_at
+					) VALUES ($1,$2,$3,$4,'YouTube',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+					ON CONFLICT (external_video_id) DO UPDATE SET
+						views = EXCLUDED.views,
+						views_per_hour = EXCLUDED.views_per_hour,
+						views_per_day = EXCLUDED.views_per_day,
+						recorded_at = NOW()
+				`, "vid-"+uuid.NewString()[:8], personID, discID, cand.Video.ExternalID, cand.Video.Title,
+					cand.Video.ChannelName, cand.Video.ChannelSubscribers, cand.Video.VideoURL,
+					cand.Video.Views, cand.Video.Likes, cand.Video.Comments,
+					cand.Video.ViewsPerHour, cand.Video.ViewsPerDay, cand.Video.ChannelMultiplier, cand.Video.PublishedAt)
+			}
+
+			if cand.Social != nil {
+				_, _ = db.DB.ExecContext(ctx, `
+					INSERT INTO social_posts (
+						id, person_id, discovery_id, platform, external_post_id, author, content,
+						url, upvotes_or_likes, comments_count, shares_count, published_at
+					) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+					ON CONFLICT (external_post_id) DO UPDATE SET
+						upvotes_or_likes = EXCLUDED.upvotes_or_likes,
+						comments_count = EXCLUDED.comments_count,
+						recorded_at = NOW()
+				`, "soc-"+uuid.NewString()[:8], personID, discID, cand.Social.Platform, cand.Social.ExternalID,
+					cand.Social.Author, cand.Social.Content, cand.Social.URL,
+					cand.Social.Upvotes, cand.Social.Comments, cand.Social.Shares, cand.Social.PublishedAt)
+			}
+
+			_ = runUnderdogAssessmentWithOptions(ctx, personID, discID, cand, result.UsedGemini)
+			_ = RecordTrendObservation(ctx, discID, personID, stage, viewsTotal, vph, vph*24.0, chanRel, indCov)
+			_, _ = RunDeepResearchAndVerificationWithProfile(ctx, personID, discID, it.wikiProf)
+
+			_ = DispatchNotification(
+				ctx,
+				"new_live_discovery",
+				"info",
+				fmt.Sprintf("Live Discovery: %s (%s)", cand.PersonName, stage),
+				fmt.Sprintf("Detected via %s — %s", cand.Publisher, truncateText(cand.Headline, 140)),
+				fmt.Sprintf("/opportunities/%s", discID),
+				discID,
+				"",
+				"live-disc-"+discID,
+			)
+		}(item)
+	}
+	persistWG.Wait()
+
+	result.SourcesScanned["src-youtube"] = ytFound
+
+	// Record real per-source telemetry concurrently
+	var srcWG sync.WaitGroup
+	srcStats := []struct {
+		id  string
+		fnd int
+		nw  int
+	}{
+		{"src-google-news", len(newsCands), perSourceNew["src-google-news"]},
+		{"src-google-trends", len(trendsCands), perSourceNew["src-google-trends"]},
+		{"src-reddit", len(redditCands), perSourceNew["src-reddit"]},
+		{"src-wikipedia", len(wikiCands), perSourceNew["src-wikipedia"]},
+		{"src-youtube", ytFound, 0},
+	}
+	for _, st := range srcStats {
+		srcWG.Add(1)
+		go func(id string, fnd, nw int) {
+			defer srcWG.Done()
+			recordSourceRun(ctx, id, fnd, nw, "")
+		}(st.id, st.fnd, st.nw)
+	}
+	srcWG.Wait()
+
+	result.DurationMs = time.Since(start).Milliseconds()
+	return result, nil
 }
 
 // 3. TREND MONITORING AGENT
@@ -193,12 +604,15 @@ func RecordTrendObservation(
 
 func RunTrendMonitoringCycle(ctx context.Context) (int, error) {
 	rows, err := db.DB.QueryContext(ctx, `
-		SELECT d.id, d.person_id, d.trend_stage, d.independent_coverage_count,
-		       COALESCE((SELECT views_total FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 180000),
-		       COALESCE((SELECT views_per_hour FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 9500),
-		       COALESCE((SELECT channel_relative_perf FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 3.8)
+		SELECT d.id, d.person_id, p.canonical_name, d.trend_stage, d.independent_coverage_count,
+		       COALESCE((SELECT views_total FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 45000),
+		       COALESCE((SELECT views_per_hour FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 1500),
+		       COALESCE((SELECT channel_relative_perf FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 2.5)
 		FROM discoveries d
+		JOIN people p ON p.id = d.person_id
 		WHERE d.status = 'active'
+		ORDER BY d.updated_at ASC
+		LIMIT 10
 	`)
 	if err != nil {
 		return 0, err
@@ -208,6 +622,7 @@ func RunTrendMonitoringCycle(ctx context.Context) (int, error) {
 	type item struct {
 		discID    string
 		personID  string
+		name      string
 		stage     string
 		cov       int
 		views     int64
@@ -217,23 +632,40 @@ func RunTrendMonitoringCycle(ctx context.Context) (int, error) {
 	var list []item
 	for rows.Next() {
 		var it item
-		if err := rows.Scan(&it.discID, &it.personID, &it.stage, &it.cov, &it.views, &it.vph, &it.chanMulti); err == nil {
+		if err := rows.Scan(&it.discID, &it.personID, &it.name, &it.stage, &it.cov, &it.views, &it.vph, &it.chanMulti); err == nil {
 			list = append(list, it)
 		}
 	}
 
+	aiCfg := ai.GetAIConfig(ctx)
 	updated := 0
-	for _, it := range list {
-		newVph := math.Round(it.vph * 1.06)
-		newViews := it.views + int64(newVph)
-		newCov := it.cov + 1
-		newStage := it.stage
-		if it.stage == "Early Whisper" && newCov >= 5 {
-			newStage = "Emerging"
-		} else if it.stage == "Emerging" && newVph >= 12000 {
-			newStage = "Accelerating"
+	for idx, it := range list {
+		newViews := it.views
+		newVph := it.vph
+		newChan := it.chanMulti
+		newCov := it.cov
+
+		// Refresh live YouTube velocity on top 5 active subjects per cycle
+		if idx < 5 {
+			ytCtx, cancelYT := context.WithTimeout(ctx, 4*time.Second)
+			vid, errYT := connectors.LookupYouTubeVideoForPerson(ytCtx, it.name, aiCfg.YouTubeAPIKey)
+			cancelYT()
+			if errYT == nil && vid != nil && vid.Views > 0 {
+				newViews = vid.Views
+				newVph = vid.ViewsPerHour
+				newChan = vid.ChannelMultiplier
+			}
 		}
-		_ = RecordTrendObservation(ctx, it.discID, it.personID, newStage, newViews, newVph, newVph*24, it.chanMulti, newCov)
+
+		newStage := it.stage
+		if newVph >= 12000 || (newViews >= 350000 && newChan >= 4.0) {
+			newStage = "Major Viral Opportunity"
+		} else if newVph >= 3500 || newViews >= 100000 {
+			newStage = "Accelerating"
+		} else if it.stage == "Early Whisper" && (newCov >= 5 || newVph >= 900) {
+			newStage = "Emerging"
+		}
+		_ = RecordTrendObservation(ctx, it.discID, it.personID, newStage, newViews, newVph, newVph*24, newChan, newCov)
 		_, _ = db.DB.ExecContext(ctx, `
 			UPDATE discoveries SET trend_stage = $2, independent_coverage_count = $3, updated_at = NOW() WHERE id = $1
 		`, it.discID, newStage, newCov)
@@ -244,6 +676,10 @@ func RunTrendMonitoringCycle(ctx context.Context) (int, error) {
 
 // 4. UNDERDOG ASSESSMENT & OPPORTUNITY SCORING AGENT
 func RunUnderdogAssessment(ctx context.Context, personID string, discoveryID string, cand connectors.DiscoveredCandidate) error {
+	return runUnderdogAssessmentWithOptions(ctx, personID, discoveryID, cand, true)
+}
+
+func runUnderdogAssessmentWithOptions(ctx context.Context, personID string, discoveryID string, cand connectors.DiscoveredCandidate, allowGemini bool) error {
 	var ytViews int64 = 285000
 	var ytVPH float64 = 14200
 	var redditUps int64 = 1850
@@ -278,30 +714,64 @@ func RunUnderdogAssessment(ctx context.Context, personID string, discoveryID str
 	gapsReport := "Early childhood local newspaper clippings and coach interviews identified for optional archival B-roll expansion."
 	audienceReport := "High cross-platform velocity on YouTube commentary channels, Reddit r/sports threads, and Google News syndication with low long-form documentary saturation."
 
-	overallScore := 91.5
-	uStrength := 92.0
-	transScore := 90.0
-	achSig := 94.0
-	audMom := 88.0
-	docPot := 93.0
-	timeScore := 91.0
-	evConf := 95.0
-	satRisk := 19.0
-
-	rationale := map[string]string{
-		"underdog_strength":        "High underdog score based on documented unseeded challenger trajectory and competitive barriers.",
-		"transformation_score":     "Clear narrative arc from regional contender to historic international breakthrough.",
-		"achievement_significance": "Milestone verified by official federation records and international press.",
-		"audience_momentum":        fmt.Sprintf("Strong views-per-hour velocity (~%.0f VPH) and elevated social engagement.", ytVPH),
-		"documentary_potential":    "Rich chronological milestones, high emotional stakes, and distinct visual locations across ages.",
-		"timeliness_score":         "Active news cycle momentum with immediate viewer curiosity.",
-		"evidence_confidence":      "Multi-source corroboration across Wikipedia, official federation records, and tier-1 press.",
-		"saturation_risk":          "Low saturation: short news clips exist, but comprehensive 20-minute biographical documentaries remain scarce.",
+	// Compute dynamic signal-based baseline scores from real live telemetry
+	lowerText := strings.ToLower(cand.Headline + " " + cand.Achievement + " " + cand.WikiExtract)
+	uStrength := 76.0
+	if strings.Contains(lowerText, "underdog") || strings.Contains(lowerText, "unseeded") || strings.Contains(lowerText, "upset") {
+		uStrength += 14.0
+		classification = "Unexpected champion"
+	} else if strings.Contains(lowerText, "comeback") || strings.Contains(lowerText, "injury") || strings.Contains(lowerText, "overcame") {
+		uStrength += 12.0
+		classification = "Comeback story"
+	} else if strings.Contains(lowerText, "youngest") || strings.Contains(lowerText, "first") || strings.Contains(lowerText, "record") {
+		uStrength += 10.0
+		classification = "Breakthrough story"
+	} else {
+		classification = "Emerging underdog"
+	}
+	if len(cand.WikiExtract) > 300 {
+		uStrength = math.Min(96.0, uStrength+4.0)
 	}
 
-	// Dynamic Google Gemini AI Assessment if API key is active
-	if ai.HasGeminiKey(ctx) {
-		eval, errAI := ai.EvaluateUnderdogWithGemini(ctx, cand.PersonName, cand.Headline, cand.Achievement, cand.WikiExtract, ytViews, ytVPH, redditUps, redditComments)
+	transScore := math.Min(95.0, math.Round(72.0+math.Min(18.0, float64(len(cand.WikiExtract))/50.0)))
+	achSig := 80.0
+	if strings.Contains(lowerText, "world record") || strings.Contains(lowerText, "olympic") || strings.Contains(lowerText, "world champion") {
+		achSig = 93.0
+	} else if strings.Contains(lowerText, "champion") || strings.Contains(lowerText, "gold") || strings.Contains(lowerText, "final") {
+		achSig = 88.0
+	}
+	audMom := math.Min(97.0, math.Round(58.0+math.Log10(math.Max(10, ytVPH))*8.8+math.Log10(math.Max(10, float64(redditUps)))*2.4))
+	docPot := math.Min(96.0, math.Round((uStrength+transScore+achSig)/3.0+2.0))
+	timeScore := 88.0
+	if cand.Platform == "News" || cand.Platform == "Google Trends" || cand.Platform == "Reddit" {
+		timeScore = 92.0
+	}
+	evConf := 78.0
+	if cand.WikiExtract != "" {
+		evConf += 14.0
+	}
+	if cand.Video != nil {
+		evConf += 4.0
+	}
+	satRisk := math.Max(12.0, math.Min(58.0, math.Round(16.0+math.Log10(math.Max(10, float64(ytViews)))*3.2)))
+	overallScore := math.Round((uStrength*0.20+transScore*0.14+achSig*0.16+audMom*0.16+docPot*0.14+timeScore*0.10+evConf*0.10-satRisk*0.04)*10) / 10
+
+	rationale := map[string]string{
+		"underdog_strength":        fmt.Sprintf("Evaluated from live %s coverage and biographical adversity signals.", cand.Platform),
+		"transformation_score":     "Narrative arc derived from documented career milestones and breakthrough trajectory.",
+		"achievement_significance": fmt.Sprintf("Breakthrough headline verified via %s.", cand.Publisher),
+		"audience_momentum":        fmt.Sprintf("Live platform velocity: ~%.0f views/hr (%d total views) and social traction.", ytVPH, ytViews),
+		"documentary_potential":    "Chronological milestones and visual storytelling suitability for 15–25 minute documentary.",
+		"timeliness_score":         fmt.Sprintf("Detected live on %s (%s).", cand.Platform, cand.EventDate),
+		"evidence_confidence":      "Cross-referenced across live news/social feed and Wikipedia biographical records.",
+		"saturation_risk":          "Estimated from current video volume vs. long-form biographical documentary supply.",
+	}
+
+	// Dynamic Google Gemini AI Assessment if API key is active & healthy (bounded timeout)
+	if allowGemini && ai.HasGeminiKey(ctx) {
+		gemCtx, cancelGem := context.WithTimeout(ctx, 10*time.Second)
+		eval, errAI := ai.EvaluateUnderdogWithGemini(gemCtx, cand.PersonName, cand.Headline, cand.Achievement, cand.WikiExtract, ytViews, ytVPH, redditUps, redditComments)
+		cancelGem()
 		if errAI == nil && eval != nil {
 			if eval.Classification != "" {
 				classification = eval.Classification
@@ -422,11 +892,19 @@ func RunUnderdogAssessment(ctx context.Context, personID string, discoveryID str
 	`, "score-"+uuid.NewString()[:8], discoveryID, personID,
 		overallScore, uStrength, transScore, achSig, audMom, docPot, timeScore, evConf, satRisk, string(ratBytes))
 
+	_, _ = db.DB.ExecContext(ctx, `
+		UPDATE people SET underdog_classification = $2, updated_at = NOW() WHERE id = $1
+	`, personID, classification)
+
 	return err
 }
 
 // 5 & 6. RESEARCH AGENT & FACT VERIFICATION AGENT
 func RunDeepResearchAndVerification(ctx context.Context, personID string, discoveryID string) (map[string]any, error) {
+	return RunDeepResearchAndVerificationWithProfile(ctx, personID, discoveryID, nil)
+}
+
+func RunDeepResearchAndVerificationWithProfile(ctx context.Context, personID string, discoveryID string, preloadedWiki *connectors.WikiDeepProfile) (map[string]any, error) {
 	var name, summary string
 	err := db.DB.QueryRowContext(ctx, `SELECT canonical_name, COALESCE(summary, '') FROM people WHERE id = $1`, personID).Scan(&name, &summary)
 	if err != nil {
@@ -439,7 +917,10 @@ func RunDeepResearchAndVerification(ctx context.Context, personID string, discov
 		VALUES ($1, $2, $3, 'running', 'deep', NOW())
 	`, jobID, personID, discoveryID)
 
-	wikiProf, _ := connectors.FetchWikipediaProfile(ctx, name)
+	wikiProf := preloadedWiki
+	if wikiProf == nil {
+		wikiProf, _ = connectors.FetchWikipediaProfile(ctx, name)
+	}
 
 	var sections []connectors.WikiSection
 	pageURL := fmt.Sprintf("https://en.wikipedia.org/wiki/%s", strings.ReplaceAll(name, " ", "_"))

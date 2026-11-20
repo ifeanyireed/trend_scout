@@ -112,6 +112,9 @@ func CallGeminiJSON(ctx context.Context, systemPrompt string, userPrompt string,
 	if cfg.Model != "gemini-2.5-flash" {
 		modelsToTry = append(modelsToTry, "gemini-2.5-flash")
 	}
+	if cfg.Model != "gemini-2.0-flash" {
+		modelsToTry = append(modelsToTry, "gemini-2.0-flash")
+	}
 
 	var lastErr error
 	for _, model := range modelsToTry {
@@ -141,7 +144,7 @@ func CallGeminiJSON(ctx context.Context, systemPrompt string, userPrompt string,
 			return err
 		}
 
-		client := &http.Client{Timeout: 35 * time.Second}
+		client := &http.Client{Timeout: 15 * time.Second}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
 		if err != nil {
 			return err
@@ -172,8 +175,11 @@ func CallGeminiJSON(ctx context.Context, systemPrompt string, userPrompt string,
 		}
 		if gResp.Error != nil {
 			lastErr = fmt.Errorf("gemini api error (%d): %s", gResp.Error.Code, gResp.Error.Message)
-			// If model not found (404), fall through to next model candidate
-			continue
+			// Only retry another model if the model name itself was not found (404)
+			if gResp.Error.Code == 404 {
+				continue
+			}
+			return lastErr
 		}
 		if len(gResp.Candidates) == 0 || len(gResp.Candidates[0].Content.Parts) == 0 {
 			lastErr = fmt.Errorf("gemini returned empty candidates")
