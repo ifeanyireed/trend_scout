@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,11 +13,35 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"trendscout-backend/internal/agents"
 	"trendscout-backend/internal/api"
 	"trendscout-backend/internal/db"
 	"trendscout-backend/internal/queue"
 )
+
+func authRequest(t *testing.T, method, url, token string, body []byte) *http.Response {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, reader)
+	if err != nil {
+		t.Fatalf("Failed to build request %s %s: %v", method, url, err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP %s %s failed: %v", method, url, err)
+	}
+	return resp
+}
 
 func TestEndToEndTrendScoutPipeline(t *testing.T) {
 	conn, err := db.ConnectAndMigrate()
@@ -37,10 +62,86 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	// 0. Verify Live Discovery Scan endpoint executes cleanly & logs real source runs
-	scanResp, err := http.Post(server.URL+"/api/discoveries/scan", "application/json", bytes.NewReader([]byte(`{}`)))
-	if err != nil || scanResp.StatusCode != 200 {
-		t.Fatalf("Live discovery scan failed: err=%v status=%d", err, scanResp.StatusCode)
+	// 1. Verify Unauthenticated & Expired JWT Rejection
+	unauthResp := authRequest(t, http.MethodGet, server.URL+"/api/auth/me", "", nil)
+	unauthResp.Body.Close()
+	if unauthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 for unauthenticated /api/auth/me, got %d", unauthResp.StatusCode)
+	}
+
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "trendscout-studio-production-secret-key-2026"
+	}
+	expiredTok, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":  "usr-producer-01",
+		"type": "access",
+		"exp":  time.Now().Add(-5 * time.Minute).Unix(),
+	}).SignedString([]byte(secret))
+
+	expTokResp := authRequest(t, http.MethodGet, server.URL+"/api/dashboard/overview", expiredTok, nil)
+	var expErrBody map[string]any
+	_ = json.NewDecoder(expTokResp.Body).Decode(&expErrBody)
+	expTokResp.Body.Close()
+	if expTokResp.StatusCode != http.StatusUnauthorized || expErrBody["code"] != "TOKEN_EXPIRED" {
+		t.Fatalf("Expected 401 TOKEN_EXPIRED for expired JWT, got status=%d body=%+v", expTokResp.StatusCode, expErrBody)
+	}
+
+	// 2. Test Login & JWT Refresh Session Flow
+	loginBody, _ := json.Marshal(map[string]any{
+		"email":      "producer@trendscout.studio",
+		"password":   "trendscout2026",
+		"rememberMe": true,
+	})
+	resp := authRequest(t, http.MethodPost, server.URL+"/api/auth/login", "", loginBody)
+	if resp.StatusCode != 200 {
+		t.Fatalf("Login failed: status=%d", resp.StatusCode)
+	}
+	var authRes struct {
+		Token            string `json:"token"`
+		RefreshToken     string `json:"refreshToken"`
+		ExpiresAt        string `json:"expiresAt"`
+		ExpiresIn        int64  `json:"expiresIn"`
+		RefreshExpiresAt string `json:"refreshExpiresAt"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&authRes)
+	resp.Body.Close()
+	if authRes.Token == "" || authRes.RefreshToken == "" || authRes.ExpiresAt == "" || authRes.ExpiresIn <= 0 {
+		t.Fatalf("Expected valid JWT session payload, got %+v", authRes)
+	}
+
+	// Refresh token must NOT work as an access token
+	wrongTypeResp := authRequest(t, http.MethodGet, server.URL+"/api/auth/me", authRes.RefreshToken, nil)
+	wrongTypeResp.Body.Close()
+	if wrongTypeResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 when using refresh token as access token, got %d", wrongTypeResp.StatusCode)
+	}
+
+	// Refresh endpoint returns a fresh valid access token
+	refBody, _ := json.Marshal(map[string]string{"refreshToken": authRes.RefreshToken})
+	refResp := authRequest(t, http.MethodPost, server.URL+"/api/auth/refresh", "", refBody)
+	if refResp.StatusCode != 200 {
+		t.Fatalf("Token refresh failed: status=%d", refResp.StatusCode)
+	}
+	_ = json.NewDecoder(refResp.Body).Decode(&authRes)
+	refResp.Body.Close()
+	if authRes.Token == "" {
+		t.Fatalf("Expected refreshed JWT token")
+	}
+
+	// Verify /api/auth/me returns active session metadata
+	meResp := authRequest(t, http.MethodGet, server.URL+"/api/auth/me", authRes.Token, nil)
+	var meData map[string]any
+	_ = json.NewDecoder(meResp.Body).Decode(&meData)
+	meResp.Body.Close()
+	if meResp.StatusCode != 200 || meData["session"] == nil {
+		t.Fatalf("Expected 200 + session metadata from /api/auth/me, got status=%d body=%+v", meResp.StatusCode, meData)
+	}
+
+	// 3. Verify Authenticated Live Discovery Scan Endpoint
+	scanResp := authRequest(t, http.MethodPost, server.URL+"/api/discoveries/scan", authRes.Token, []byte(`{}`))
+	if scanResp.StatusCode != 200 {
+		t.Fatalf("Live discovery scan failed: status=%d", scanResp.StatusCode)
 	}
 	var scanData map[string]any
 	_ = json.NewDecoder(scanResp.Body).Decode(&scanData)
@@ -50,29 +151,10 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 		t.Fatalf("Expected ok=true from /api/discoveries/scan, got %+v", scanData)
 	}
 
-	// 1. Test Authentication
-	loginBody, _ := json.Marshal(map[string]string{
-		"email":    "producer@trendscout.studio",
-		"password": "trendscout2026",
-	})
-	resp, err := http.Post(server.URL+"/api/auth/login", "application/json", bytes.NewReader(loginBody))
-	if err != nil || resp.StatusCode != 200 {
-		t.Fatalf("Login failed: err=%v status=%d", err, resp.StatusCode)
-	}
-	var authRes struct {
-		Token        string `json:"token"`
-		RefreshToken string `json:"refreshToken"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&authRes)
-	resp.Body.Close()
-	if authRes.Token == "" {
-		t.Fatalf("Expected non-empty JWT token")
-	}
-
-	// 2. Test Chrome Extension Summary Endpoint
-	extResp, err := http.Get(server.URL + "/api/extension/summary")
-	if err != nil || extResp.StatusCode != 200 {
-		t.Fatalf("Extension summary failed: %v", err)
+	// 4. Test Chrome Extension Summary Endpoint (Authenticated)
+	extResp := authRequest(t, http.MethodGet, server.URL+"/api/extension/summary", authRes.Token, nil)
+	if extResp.StatusCode != 200 {
+		t.Fatalf("Extension summary failed: status=%d", extResp.StatusCode)
 	}
 	var extData struct {
 		MonitoringActive    bool             `json:"monitoringActive"`
@@ -85,11 +167,11 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 		t.Fatalf("Unexpected extension summary payload: %+v", extData)
 	}
 
-	// 3. Test Opportunity Detail & 8-Dimension Underdog Scoring
+	// 5. Test Opportunity Detail & 8-Dimension Underdog Scoring
 	firstDiscID := extData.LatestDiscoveries[0]["id"].(string)
-	detResp, err := http.Get(server.URL + "/api/discoveries/" + firstDiscID)
-	if err != nil || detResp.StatusCode != 200 {
-		t.Fatalf("Discovery detail failed: %v", err)
+	detResp := authRequest(t, http.MethodGet, server.URL+"/api/discoveries/"+firstDiscID, authRes.Token, nil)
+	if detResp.StatusCode != 200 {
+		t.Fatalf("Discovery detail failed: status=%d", detResp.StatusCode)
 	}
 	var detData map[string]any
 	_ = json.NewDecoder(detResp.Body).Decode(&detData)
@@ -98,10 +180,10 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 		t.Fatalf("Missing underdogAssessment or scoreRationale in opportunity detail")
 	}
 
-	// 4. Test Documentary Project Workspace, 5-10s Visual Timeline & Character Consistency Sheets
-	projectsResp, err := http.Get(server.URL + "/api/projects")
-	if err != nil || projectsResp.StatusCode != 200 {
-		t.Fatalf("Projects list failed: %v", err)
+	// 6. Test Documentary Project Workspace, <=7s Visual Timeline & Character Consistency Sheets
+	projectsResp := authRequest(t, http.MethodGet, server.URL+"/api/projects", authRes.Token, nil)
+	if projectsResp.StatusCode != 200 {
+		t.Fatalf("Projects list failed: status=%d", projectsResp.StatusCode)
 	}
 	var projListData struct {
 		Projects []map[string]any `json:"projects"`
@@ -113,23 +195,20 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 	if len(projListData.Projects) > 0 {
 		testProjectID = projListData.Projects[0]["id"].(string)
 	} else {
-		apprResp, errA := http.Post(server.URL+"/api/discoveries/"+firstDiscID+"/approve", "application/json", bytes.NewReader([]byte("{}")))
-		if errA == nil && apprResp.StatusCode == 200 {
+		apprResp := authRequest(t, http.MethodPost, server.URL+"/api/discoveries/"+firstDiscID+"/approve", authRes.Token, []byte("{}"))
+		if apprResp.StatusCode == 200 {
 			var appData struct {
 				ProjectID string `json:"projectId"`
 			}
 			_ = json.NewDecoder(apprResp.Body).Decode(&appData)
-			apprResp.Body.Close()
 			testProjectID = appData.ProjectID
 		}
-	}
-	if testProjectID == "" {
-		testProjectID = "proj-gukesh-world-champ"
+		apprResp.Body.Close()
 	}
 
-	wsResp, err := http.Get(server.URL + "/api/projects/" + testProjectID)
-	if err != nil || wsResp.StatusCode != 200 {
-		t.Fatalf("Project workspace failed: %v", err)
+	wsResp := authRequest(t, http.MethodGet, server.URL+"/api/projects/"+testProjectID, authRes.Token, nil)
+	if wsResp.StatusCode != 200 {
+		t.Fatalf("Project workspace failed: status=%d", wsResp.StatusCode)
 	}
 	var wsData struct {
 		CharacterReferences []map[string]any `json:"characterReferences"`
@@ -148,18 +227,18 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 	}
 	for _, seg := range wsData.VisualSegments {
 		dur := seg["durationSeconds"].(float64)
-		if dur < 5.0 || dur > 10.0 {
-			t.Fatalf("Segment duration %f out of required 5-10s bounds", dur)
+		if dur < 3.0 || dur > 7.0 {
+			t.Fatalf("Segment duration %f out of required <=7s bounds (3-7s)", dur)
 		}
 	}
 	if len(wsData.AudioAssets) == 0 || len(wsData.SubtitleAssets) == 0 {
 		t.Fatalf("Expected master narration audio and SRT subtitle assets")
 	}
 
-	// 5. Test Complete Production Package Export + FFmpeg 16:9 Video Assembly
-	expResp, err := http.Post(server.URL+"/api/projects/"+testProjectID+"/assemble-video", "application/json", bytes.NewReader([]byte(`{}`)))
-	if err != nil || expResp.StatusCode != 200 {
-		t.Fatalf("Export & FFmpeg video assembly failed: err=%v status=%d", err, expResp.StatusCode)
+	// 7. Test Complete Production Package Export + FFmpeg 16:9 Video Assembly
+	expResp := authRequest(t, http.MethodPost, server.URL+"/api/projects/"+testProjectID+"/assemble-video", authRes.Token, []byte(`{}`))
+	if expResp.StatusCode != 200 {
+		t.Fatalf("Export & FFmpeg video assembly failed: status=%d", expResp.StatusCode)
 	}
 	var expData struct {
 		PackageZipURL string `json:"packageZipUrl"`
@@ -176,7 +255,7 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 		t.Fatalf("Expected FFmpeg assembled 16:9 MP4 video URL")
 	}
 
-	// 6. Test Persistent Cloud Queue Idempotency & Execution
+	// 8. Test Persistent Cloud Queue Idempotency & Execution
 	idemKey := fmt.Sprintf("test-idem-%d", time.Now().UnixNano())
 	j1, err := queue.EnqueueJob(ctx, "trend_monitoring_cycle", 9, idemKey, map[string]any{"test": true})
 	if err != nil {
@@ -191,7 +270,7 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 		t.Fatalf("Expected worker to process queued background job")
 	}
 
-	// 7. Verify Chrome Extension Manifest V3 files exist
+	// 9. Verify Chrome Extension Manifest V3 files exist
 	manifestCandidates := []string{
 		"extension/manifest.json",
 		"../extension/manifest.json",

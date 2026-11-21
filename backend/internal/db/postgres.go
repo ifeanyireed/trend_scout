@@ -445,7 +445,7 @@ CREATE TABLE IF NOT EXISTS documentary_projects (
 	target_duration_minutes INTEGER NOT NULL DEFAULT 20,
 	visual_style TEXT NOT NULL DEFAULT 'Cinematic Archival Realism (35mm Documentary Stills)',
 	aspect_ratio TEXT NOT NULL DEFAULT '16:9',
-	image_interval_seconds INTEGER NOT NULL DEFAULT 8,
+	image_interval_seconds INTEGER NOT NULL DEFAULT 7,
 	thumbnail_concept TEXT,
 	youtube_titles_json TEXT NOT NULL DEFAULT '[]',
 	youtube_description TEXT,

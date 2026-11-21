@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowRight, Bookmark, Compass, Film, Flame, Search, ShieldCheck,
-  Sparkles, Trophy, TrendingUp, Activity, Bell, CheckCircle2, AlertCircle
+  Archive, ArchiveRestore, ArrowRight, Bookmark, Compass, Eye, EyeOff, Film, Flame, Lock, Search, ShieldCheck,
+  Sparkles, Trophy, TrendingUp, Activity, Bell, CheckCircle2, AlertCircle, Clock
 } from 'lucide-react';
-import { apiFetch, setAuthSession } from '../api/client';
+import { apiFetch, hasActiveSession, setAuthSession } from '../api/client';
+import { PaginationController } from '../components/PaginationController';
 
 export const StageBadge: React.FC<{ stage: string }> = ({ stage }) => {
   const styles: Record<string, string> = {
@@ -26,31 +27,52 @@ export const StageBadge: React.FC<{ stage: string }> = ({ stage }) => {
   );
 };
 
-// 1. LOGIN PAGE (ofia_ng Liquid Glass + Electric Blue)
+// 1. LOGIN PAGE (JWT Auth + Session Expiry Handling)
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const searchParams = new URLSearchParams(location.search);
+  const sessionExpired = searchParams.get('expired') === '1' || Boolean((location.state as any)?.expired);
+  const redirectTo = (location.state as any)?.from || '/';
+
+  useEffect(() => {
+    if (hasActiveSession() && !sessionExpired) {
+      navigate(redirectTo, { replace: true });
+    }
+  }, [navigate, redirectTo, sessionExpired]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (!email.trim() || !password) {
+      setError('Please enter both your producer email and password.');
+      return;
+    }
+    setLoading(true);
     try {
       const res = await apiFetch('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email: email.trim(), password, rememberMe }),
       });
-      setAuthSession(res.token, res.refreshToken, res.user);
-      navigate('/');
+      setAuthSession(res.token, res.refreshToken, res.user, res.expiresAt, res.refreshExpiresAt);
+      navigate(redirectTo, { replace: true });
     } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+      setError(err.message || 'Authentication failed. Check your credentials.');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
     <div className="min-h-screen bg-nexa-bg-base flex items-center justify-center p-6">
-      <div className="liquid-glass rounded-3xl border border-nexa-border max-w-md w-full p-8">
+      <div className="liquid-glass rounded-3xl border border-nexa-border max-w-md w-full p-8 shadow-xl">
         <div className="flex items-center gap-3.5 mb-6">
           <img
             src="/logo.png"
@@ -60,47 +82,93 @@ export const LoginPage: React.FC = () => {
           <div>
             <h1 className="text-xl font-black text-display text-nexa-text-primary">TrendScout Studio</h1>
             <p className="text-xs text-nexa-text-secondary font-medium">
-              AI Documentary Discovery & Production OS
+              AI Documentary Discovery &amp; Production OS
             </p>
           </div>
         </div>
-        {error && (
-          <div className="mb-4 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-500 text-xs font-bold">
-            {error}
+
+        {sessionExpired && !error && (
+          <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-amber-600 dark:text-amber-400 text-xs font-bold flex items-center gap-2.5">
+            <Clock className="w-4 h-4 shrink-0" />
+            <span>Your studio session expired for security. Please sign in again.</span>
           </div>
         )}
+
+        {error && (
+          <div className="mb-4 p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-rose-500 text-xs font-bold flex items-center gap-2.5">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-bold text-nexa-text-secondary uppercase tracking-wider mb-1.5">
-              Producer Email
+              Email Address
             </label>
             <input
               type="email"
-              placeholder="producer@trendscout.studio"
+              required
+              autoComplete="email"
+              placeholder="Enter your email address"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-4 py-3 border border-nexa-border bg-nexa-bg-surface rounded-2xl text-sm text-nexa-text-primary outline-none focus:border-nexa-brand"
+              className="w-full px-4 py-3 border border-nexa-border bg-nexa-bg-surface rounded-2xl text-sm text-nexa-text-primary outline-none focus:border-nexa-brand transition"
             />
           </div>
           <div>
             <label className="block text-xs font-bold text-nexa-text-secondary uppercase tracking-wider mb-1.5">
               Password
             </label>
-            <input
-              type="password"
-              placeholder="••••••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 border border-nexa-border bg-nexa-bg-surface rounded-2xl text-sm text-nexa-text-primary outline-none focus:border-nexa-brand"
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                autoComplete="current-password"
+                placeholder="••••••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 pr-11 border border-nexa-border bg-nexa-bg-surface rounded-2xl text-sm text-nexa-text-primary outline-none focus:border-nexa-brand transition"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-nexa-text-muted hover:text-nexa-text-primary cursor-pointer"
+                title={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
+
+          <label className="flex items-center justify-between gap-2 text-xs text-nexa-text-secondary cursor-pointer select-none pt-1">
+            <span className="flex items-center gap-2 font-semibold">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="rounded border-nexa-border accent-nexa-brand cursor-pointer"
+              />
+              Keep me signed in
+            </span>
+          </label>
+
           <button
             type="submit"
-            className="w-full py-3.5 rounded-2xl bg-nexa-brand hover:bg-nexa-brand-mid text-white font-extrabold text-sm shadow-lg shadow-nexa-brand/25 transition cursor-pointer"
+            disabled={loading}
+            className="w-full py-3.5 rounded-2xl bg-nexa-brand hover:bg-nexa-brand-mid disabled:opacity-60 text-white font-extrabold text-sm shadow-lg shadow-nexa-brand/25 transition cursor-pointer flex items-center justify-center gap-2"
           >
-            Sign In to TrendScout Studio →
+            <Lock className="w-4 h-4" />
+            <span>{loading ? 'Signing in...' : 'Sign In to TrendScout Studio →'}</span>
           </button>
         </form>
+
+        <div className="mt-6 pt-4 border-t border-nexa-border flex items-center justify-center text-[11px] text-nexa-text-muted font-semibold">
+          <span className="flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+            Secure Studio Access
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -111,6 +179,8 @@ export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dashPage, setDashPage] = useState(1);
+  const [dashPageSize, setDashPageSize] = useState(6);
 
   const load = () => {
     setError(null);
@@ -127,6 +197,16 @@ export const DashboardPage: React.FC = () => {
     window.addEventListener('ts-refresh', load);
     return () => window.removeEventListener('ts-refresh', load);
   }, []);
+
+  const handleArchiveDashboardItem = async (e: React.MouseEvent, discoveryId: string) => {
+    e.stopPropagation();
+    try {
+      await apiFetch(`/api/discoveries/${discoveryId}/archive`, { method: 'POST', body: '{}' });
+      load();
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   if (error && !data) {
     return (
@@ -158,6 +238,14 @@ export const DashboardPage: React.FC = () => {
       </div>
     );
   }
+
+  const topDiscoveries: any[] = Array.isArray(data.topDiscoveries) ? data.topDiscoveries : [];
+  const dashTotalPages = Math.max(1, Math.ceil(topDiscoveries.length / dashPageSize));
+  const safeDashPage = Math.min(dashPage, dashTotalPages);
+  const pagedTopDiscoveries = topDiscoveries.slice(
+    (safeDashPage - 1) * dashPageSize,
+    safeDashPage * dashPageSize,
+  );
 
   const m = data.metrics || {};
   const kpis = [
@@ -191,7 +279,7 @@ export const DashboardPage: React.FC = () => {
       change: `${m.completedPackages ?? 0} Exports`,
       badgeClass: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
       icon: <Film className="w-5 h-5 text-amber-500" />,
-      sub: '20-min scripts & 5–10s Google Flow beats',
+      sub: '20-min scripts & ≤7s Google Flow beats',
     },
   ];
 
@@ -268,7 +356,7 @@ export const DashboardPage: React.FC = () => {
           </div>
 
           <div className="space-y-3.5">
-            {(data.topDiscoveries || []).length === 0 ? (
+            {topDiscoveries.length === 0 ? (
               <div className="p-8 rounded-2xl border border-dashed border-nexa-border bg-nexa-bg-base/40 text-center space-y-3">
                 <div className="w-11 h-11 rounded-2xl bg-nexa-brand/10 text-nexa-brand flex items-center justify-center mx-auto">
                   <Compass className="w-5 h-5" />
@@ -287,7 +375,7 @@ export const DashboardPage: React.FC = () => {
                 </button>
               </div>
             ) : (
-              (data.topDiscoveries || []).map((item: any) => (
+              pagedTopDiscoveries.map((item: any) => (
               <div
                 key={item.id}
                 onClick={() => navigate(`/opportunities/${item.id}`)}
@@ -312,6 +400,13 @@ export const DashboardPage: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    onClick={(e) => handleArchiveDashboardItem(e, item.id)}
+                    title="Archive discovery"
+                    className="p-2 rounded-full border border-nexa-border hover:border-amber-500/60 text-nexa-text-muted hover:text-amber-500 transition cursor-pointer"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                  </button>
                   <div className="text-right px-3.5 py-2 rounded-2xl bg-nexa-brand/10 border border-nexa-brand/20">
                     <div className="text-[9px] font-extrabold uppercase text-nexa-brand">Score</div>
                     <div className="text-xl font-black text-display text-nexa-brand">
@@ -324,6 +419,22 @@ export const DashboardPage: React.FC = () => {
             ))
             )}
           </div>
+
+          {topDiscoveries.length > 0 && (
+            <div className="mt-4">
+              <PaginationController
+                currentPage={safeDashPage}
+                totalItems={topDiscoveries.length}
+                pageSize={dashPageSize}
+                pageSizeOptions={[6, 10, 20]}
+                onPageChange={(p) => setDashPage(p)}
+                onPageSizeChange={(sz) => {
+                  setDashPageSize(sz);
+                  setDashPage(1);
+                }}
+              />
+            </div>
+          )}
         </div>
 
         <div className="space-y-6">
@@ -390,6 +501,11 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState('');
+  const [statusTab, setStatusTab] = useState<'active' | 'archived'>('active');
+  const [activeCount, setActiveCount] = useState(0);
+  const [archivedCount, setArchivedCount] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   const titles: Record<string, { title: string; subtitle: string }> = {
     discover: {
@@ -412,9 +528,11 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
 
   const load = () => {
     setError(null);
-    apiFetch('/api/discoveries')
+    apiFetch(`/api/discoveries?status=${statusTab}`)
       .then((res) => {
         let list = Array.isArray(res?.discoveries) ? res.discoveries : [];
+        setActiveCount(Number(res?.activeCount ?? 0));
+        setArchivedCount(Number(res?.archivedCount ?? 0));
         if (mode === 'trending') {
           list = list.filter((d: any) => d.trendStage === 'Major Viral Opportunity' || d.trendStage === 'Accelerating');
         } else if (mode === 'emerging') {
@@ -431,24 +549,49 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
 
   useEffect(() => {
     setLoading(true);
+    setCurrentPage(1);
     load();
     window.addEventListener('ts-refresh', load);
     return () => window.removeEventListener('ts-refresh', load);
-  }, [mode]);
+  }, [mode, statusTab]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, stageFilter, pageSize]);
 
   const filtered = items.filter((d) => {
     if (stageFilter && d.trendStage !== stageFilter) return false;
     if (search) {
       const q = search.toLowerCase();
       return (
-        d.personName.toLowerCase().includes(q) ||
-        d.headline.toLowerCase().includes(q) ||
-        d.category.toLowerCase().includes(q) ||
-        d.country.toLowerCase().includes(q)
+        (d.personName || '').toLowerCase().includes(q) ||
+        (d.headline || '').toLowerCase().includes(q) ||
+        (d.category || '').toLowerCase().includes(q) ||
+        (d.country || '').toLowerCase().includes(q)
       );
     }
     return true;
   });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const paginatedItems = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleToggleArchive = async (e: React.MouseEvent, d: any) => {
+    e.stopPropagation();
+    const action = d.status === 'archived' ? 'restore' : 'archive';
+    try {
+      await apiFetch(`/api/discoveries/${d.id}/${action}`, { method: 'POST', body: '{}' });
+      load();
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const handleAddWatchlist = async (e: React.MouseEvent, d: any) => {
     e.stopPropagation();
@@ -470,8 +613,33 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
           <h1 className="text-2xl font-black text-display text-nexa-text-primary">{titles[mode].title}</h1>
           <p className="text-xs text-nexa-text-secondary mt-1">{titles[mode].subtitle}</p>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center bg-nexa-bg-surface px-3.5 py-2 rounded-full border border-nexa-border gap-2 w-64">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <div className="inline-flex items-center p-1 rounded-full bg-nexa-bg-surface border border-nexa-border">
+            <button
+              type="button"
+              onClick={() => setStatusTab('active')}
+              className={`px-3.5 py-1.5 rounded-full text-xs font-extrabold transition cursor-pointer ${
+                statusTab === 'active'
+                  ? 'bg-nexa-brand text-white shadow-sm'
+                  : 'text-nexa-text-secondary hover:text-nexa-text-primary'
+              }`}
+            >
+              Active ({activeCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusTab('archived')}
+              className={`px-3.5 py-1.5 rounded-full text-xs font-extrabold transition cursor-pointer flex items-center gap-1.5 ${
+                statusTab === 'archived'
+                  ? 'bg-nexa-brand text-white shadow-sm'
+                  : 'text-nexa-text-secondary hover:text-nexa-text-primary'
+              }`}
+            >
+              <Archive className="w-3.5 h-3.5" />
+              Archived ({archivedCount})
+            </button>
+          </div>
+          <div className="flex items-center bg-nexa-bg-surface px-3.5 py-2 rounded-full border border-nexa-border gap-2 w-60">
             <Search className="w-4 h-4 text-nexa-text-muted shrink-0" />
             <input
               type="text"
@@ -531,8 +699,9 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
           </button>
         </div>
       ) : (
+      <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4">
-        {filtered.map((d) => (
+        {paginatedItems.map((d) => (
           <div
             key={d.id}
             onClick={() => navigate(`/opportunities/${d.id}`)}
@@ -582,7 +751,21 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
                     {Number(d.viewsPerHour).toLocaleString()} VPH ({d.channelRelativePerf}x ch)
                   </div>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap justify-end">
+                  <button
+                    onClick={(e) => handleToggleArchive(e, d)}
+                    className="px-3.5 py-2 rounded-full border border-nexa-border hover:border-amber-500 text-xs font-bold flex items-center gap-1.5 text-nexa-text-secondary hover:text-amber-500 cursor-pointer"
+                  >
+                    {d.status === 'archived' ? (
+                      <>
+                        <ArchiveRestore className="w-3.5 h-3.5" /> Restore
+                      </>
+                    ) : (
+                      <>
+                        <Archive className="w-3.5 h-3.5" /> Archive
+                      </>
+                    )}
+                  </button>
                   <button
                     onClick={(e) => handleAddWatchlist(e, d)}
                     className="px-3.5 py-2 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-bold flex items-center gap-1.5 text-nexa-text-secondary hover:text-nexa-brand cursor-pointer"
@@ -603,6 +786,18 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
             </div>
           </div>
         ))}
+      </div>
+      <PaginationController
+        currentPage={safePage}
+        totalItems={filtered.length}
+        pageSize={pageSize}
+        pageSizeOptions={[10, 20, 50]}
+        onPageChange={handlePageChange}
+        onPageSizeChange={(sz) => {
+          setPageSize(sz);
+          setCurrentPage(1);
+        }}
+      />
       </div>
       )}
     </div>
@@ -651,6 +846,17 @@ export const OpportunityDetailPage: React.FC = () => {
     }
   };
 
+  const handleToggleArchiveDetail = async () => {
+    setBusy(true);
+    try {
+      const action = detail.status === 'archived' ? 'restore' : 'archive';
+      await apiFetch(`/api/discoveries/${detail.id}/${action}`, { method: 'POST', body: '{}' });
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="nexa-card rounded-3xl p-6">
@@ -658,6 +864,11 @@ export const OpportunityDetailPage: React.FC = () => {
           <div className="space-y-2">
             <div className="flex items-center gap-2.5 flex-wrap">
               <StageBadge stage={detail.trendStage} />
+              {detail.status === 'archived' && (
+                <span className="px-3 py-0.5 rounded-full text-xs font-extrabold bg-amber-500/10 text-amber-500 border border-amber-500/25">
+                  Archived
+                </span>
+              )}
               <span className="px-3 py-0.5 rounded-full text-xs font-extrabold bg-nexa-brand/10 text-nexa-brand border border-nexa-brand/20">
                 {detail.underdogClassification}
               </span>
@@ -677,6 +888,21 @@ export const OpportunityDetailPage: React.FC = () => {
                 {Number(detail.overallScore).toFixed(1)} / 100
               </div>
             </div>
+            <button
+              onClick={handleToggleArchiveDetail}
+              disabled={busy}
+              className="px-4 py-2.5 rounded-full border border-nexa-border hover:border-amber-500 text-xs font-extrabold text-nexa-text-secondary hover:text-amber-500 flex items-center gap-1.5 cursor-pointer"
+            >
+              {detail.status === 'archived' ? (
+                <>
+                  <ArchiveRestore className="w-3.5 h-3.5" /> Restore
+                </>
+              ) : (
+                <>
+                  <Archive className="w-3.5 h-3.5" /> Archive
+                </>
+              )}
+            </button>
             <button
               onClick={handleRefreshResearch}
               disabled={busy}

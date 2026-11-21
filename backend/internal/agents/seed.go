@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -17,16 +18,29 @@ func EnsureInitialOperationalData(ctx context.Context) error {
 	defaultSvgPath := filepath.Join(db.StorageRoot, "characters", "default-portrait.svg")
 	_ = services.GenerateStoryboardSVG(defaultSvgPath, "TrendScout Verified Subject", "Biographical & Documentary Subject Profile", "PORTRAIT", "VERIFIED", "Championship gold")
 
-	// 1. Ensure default producer user & settings
+	// 1. Ensure default producer user & settings (synced with ADMIN_EMAIL / ADMIN_PASSWORD from .env)
+	adminEmail := strings.TrimSpace(os.Getenv("ADMIN_EMAIL"))
+	if adminEmail == "" {
+		adminEmail = "producer@trendscout.studio"
+	}
+	adminPass := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
+	if adminPass == "" {
+		adminPass = "trendscout2026"
+	}
+	adminName := strings.TrimSpace(os.Getenv("ADMIN_NAME"))
+	if adminName == "" {
+		adminName = "Lead Documentary Producer"
+	}
+
 	var userCount int
 	_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&userCount)
 	userID := "usr-producer-01"
 	if userCount == 0 {
-		hash, _ := bcrypt.GenerateFromPassword([]byte("trendscout2026"), bcrypt.DefaultCost)
+		hash, _ := bcrypt.GenerateFromPassword([]byte(adminPass), bcrypt.DefaultCost)
 		_, _ = db.DB.ExecContext(ctx, `
 			INSERT INTO users (id, email, password_hash, name, role)
-			VALUES ($1, 'producer@trendscout.studio', $2, 'Lead Documentary Producer', 'admin')
-		`, userID, string(hash))
+			VALUES ($1, $2, $3, $4, 'admin')
+		`, userID, adminEmail, string(hash), adminName)
 
 		discPrefs, _ := json.Marshal(map[string]any{
 			"categories":            []string{"Science & Medicine", "Technology & Innovation", "Business & Founders", "Arts, Film & Music", "Humanitarian & Civic Impact", "Sports & Competition"},
@@ -58,12 +72,12 @@ func EnsureInitialOperationalData(ctx context.Context) error {
 			"youtubeApiKey":        os.Getenv("YOUTUBE_API_KEY"),
 			"researchDepth":        "Deep Live Wikipedia + Multi-Platform Verification",
 			"defaultScriptMinutes": 20,
-			"writingStyle":         "Cinematic Continuous Storytelling (YouTube Mini-Doc)",
+			"writingStyle":         "Investigative Archival Documentary (<=7s Visual Pace)",
 			"language":             "en-US",
 			"dailyTokenBudget":     250000,
 		})
 		notifPrefs, _ := json.Marshal(map[string]any{
-			"emailAddress":        "producer@trendscout.studio",
+			"emailAddress":        adminEmail,
 			"earlyWhisperAlerts":  true,
 			"emergingAlerts":      true,
 			"acceleratingAlerts":  true,
@@ -73,7 +87,7 @@ func EnsureInitialOperationalData(ctx context.Context) error {
 			"chromeNotifications": true,
 		})
 		prodPrefs, _ := json.Marshal(map[string]any{
-			"imageIntervalSeconds": 8,
+			"imageIntervalSeconds": 7,
 			"visualStyle":          "Cinematic Archival Realism (35mm Documentary Stills)",
 			"aspectRatio":          "16:9",
 			"narrationProvider":    "macOS Neural Speech / OpenAI TTS",
@@ -85,6 +99,16 @@ func EnsureInitialOperationalData(ctx context.Context) error {
 			INSERT INTO user_settings (id, user_id, discovery_prefs_json, monitoring_prefs_json, ai_prefs_json, notification_prefs_json, production_prefs_json)
 			VALUES ('uset-01', $1, $2, $3, $4, $5, $6)
 		`, userID, string(discPrefs), string(monPrefs), string(aiPrefs), string(notifPrefs), string(prodPrefs))
+	} else if strings.TrimSpace(os.Getenv("ADMIN_EMAIL")) != "" && strings.TrimSpace(os.Getenv("ADMIN_PASSWORD")) != "" {
+		// Sync admin credentials if explicitly configured in environment variables
+		var existingEmail, existingHash string
+		err := db.DB.QueryRowContext(ctx, `SELECT email, password_hash FROM users WHERE id = $1`, userID).Scan(&existingEmail, &existingHash)
+		if err == nil && (existingEmail != adminEmail || bcrypt.CompareHashAndPassword([]byte(existingHash), []byte(adminPass)) != nil) {
+			newHash, _ := bcrypt.GenerateFromPassword([]byte(adminPass), bcrypt.DefaultCost)
+			_, _ = db.DB.ExecContext(ctx, `
+				UPDATE users SET email = $2, password_hash = $3, name = $4, updated_at = NOW() WHERE id = $1
+			`, userID, adminEmail, string(newHash), adminName)
+		}
 	}
 
 	// 2. Ensure connected sources exist with accurate statuses
