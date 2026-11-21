@@ -308,14 +308,14 @@ export const SettingsPage: React.FC = () => {
           </div>
           <div>
             <label className="block text-xs font-bold text-nexa-text-secondary mb-1">
-              Visual Beat Image Interval (Seconds: 5–10s)
+              Visual Beat Image Interval (Seconds: ≤7s Pace)
             </label>
             <input
               type="number"
-              min={5}
-              max={10}
-              value={settings.production?.imageIntervalSeconds ?? 8}
-              onChange={(e) => updateField('production', 'imageIntervalSeconds', Number(e.target.value))}
+              min={3}
+              max={7}
+              value={Math.min(7, settings.production?.imageIntervalSeconds ?? 7)}
+              onChange={(e) => updateField('production', 'imageIntervalSeconds', Math.min(7, Math.max(3, Number(e.target.value))))}
               className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary"
             />
           </div>

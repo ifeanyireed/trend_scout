@@ -12,6 +12,8 @@ vendor/
 # Binaries & Builds
 dist/
 web/dist/
+.vite/
+web/.vite/
 storage/trendscout-server
 *.exe
 *.exe~

@@ -242,17 +242,18 @@
   </div>
 
   <div class="subbar">
-    <span id="userLabel">producer@trendscout.studio</span>
+    <span id="userLabel">Not signed in</span>
     <div style="display:flex;gap:5px;">
-      <button id="toggleAuthBtn">Session</button>
+      <button id="toggleAuthBtn">Account</button>
       <button id="scanNowBtn">Scan Now</button>
     </div>
   </div>
 
   <div id="loginBox" class="login-box">
-    <div style="font-weight:800;margin-bottom:4px;">Studio Authentication</div>
-    <input id="emailInput" type="email" value="producer@trendscout.studio" placeholder="Email" />
-    <input id="passInput" type="password" value="trendscout2026" placeholder="Password" />
+    <div style="font-weight:800;margin-bottom:4px;">Studio Sign In</div>
+    <div id="loginError" style="display:none;color:#E02424;font-size:11px;font-weight:700;margin-bottom:6px;"></div>
+    <input id="emailInput" type="email" placeholder="Email address" />
+    <input id="passInput" type="password" placeholder="Password" />
     <div style="display:flex;gap:6px;margin-top:8px;">
       <button id="loginSubmitBtn" class="btn btn-primary" style="flex:1;">Sign In</button>
       <button id="logoutBtn" class="btn">Logout</button>

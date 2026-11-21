@@ -297,10 +297,10 @@ func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCyc
 		}
 	}
 
-	// Increment coverage on existing live discoveries
+	// Increment coverage on existing active live discoveries (leave archived rows untouched)
 	for _, upd := range existingUpdates {
 		_, _ = db.DB.ExecContext(ctx, `
-			UPDATE discoveries SET independent_coverage_count = independent_coverage_count + 1, updated_at = NOW() WHERE id = $1
+			UPDATE discoveries SET independent_coverage_count = independent_coverage_count + 1, updated_at = NOW() WHERE id = $1 AND status = 'active'
 		`, upd.discID)
 		result.UpdatedExisting++
 	}
@@ -1015,20 +1015,19 @@ func RunDeepResearchAndVerificationWithProfile(ctx context.Context, personID str
 	}, nil
 }
 
-// 7. DOCUMENTARY WRITER AGENT (15-25 Minute Continuous Storytelling Script)
-type ScriptSection struct {
-	ActNumber   int      `json:"actNumber"`
-	Title       string   `json:"title"`
-	Paragraphs  []string `json:"paragraphs"`
-	ClaimID     string   `json:"claimId"`
-	SourceID    string   `json:"sourceId"`
-	CitationURL string   `json:"citationUrl"`
+// 7. DOCUMENTARY WRITER AGENT (Dynamic Biographical 7-Chapter Realigned Script, <= 7s per visual cut)
+func GenerateDocumentaryScript(ctx context.Context, projectID string, targetDurationMinutes int, style string) (string, error) {
+	return GenerateDocumentaryScriptWithOptions(ctx, projectID, targetDurationMinutes, style, "auto")
 }
 
-func GenerateDocumentaryScript(ctx context.Context, projectID string, targetDurationMinutes int, style string) (string, error) {
+func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string, targetDurationMinutes int, style string, biographicalField string) (string, error) {
 	if targetDurationMinutes < 15 || targetDurationMinutes > 25 {
 		targetDurationMinutes = 20
 	}
+	if strings.TrimSpace(style) == "" {
+		style = "Investigative Archival Documentary"
+	}
+
 	var personID, discoveryID, projectTitle string
 	err := db.DB.QueryRowContext(ctx, `
 		SELECT person_id, COALESCE(discovery_id, ''), title FROM documentary_projects WHERE id = $1
@@ -1037,171 +1036,189 @@ func GenerateDocumentaryScript(ctx context.Context, projectID string, targetDura
 		return "", err
 	}
 
-	var personName, summary, bio string
+	var personName, category, country, summary, bio string
 	_ = db.DB.QueryRowContext(ctx, `
-		SELECT canonical_name, COALESCE(summary, ''), COALESCE(biography, '') FROM people WHERE id = $1
-	`, personID).Scan(&personName, &summary, &bio)
+		SELECT canonical_name, COALESCE(category, ''), COALESCE(country, ''), COALESCE(summary, ''), COALESCE(biography, '')
+		FROM people WHERE id = $1
+	`, personID).Scan(&personName, &category, &country, &summary, &bio)
 
-	var origins, disadvantages, rejections, obstacles, turningPoints, breakthrough string
-	_ = db.DB.QueryRowContext(ctx, `
-		SELECT origins_summary, disadvantages, rejections_and_failures, obstacles, turning_points, recent_breakthrough
-		FROM underdog_assessments WHERE person_id = $1 LIMIT 1
-	`, personID).Scan(&origins, &disadvantages, &rejections, &obstacles, &turningPoints, &breakthrough)
-
-	if origins == "" {
-		origins = fmt.Sprintf("%s began far from the spotlight of global arenas, driven by quiet discipline and family sacrifice.", personName)
-		disadvantages = "Operating without elite institutional backing or guaranteed international invitations."
-		rejections = "Early career defeats and moments where commentators questioned whether a breakthrough was possible."
-		obstacles = "Relentless qualification pressure against established world-class veterans."
-		turningPoints = "A decisive shift in preparation and composure under championship pressure."
-		breakthrough = summary
+	var headline, eventTitle string
+	if discoveryID != "" {
+		_ = db.DB.QueryRowContext(ctx, `
+			SELECT COALESCE(d.headline, ''), COALESCE(e.title, '')
+			FROM discoveries d
+			LEFT JOIN events e ON e.id = d.event_id
+			WHERE d.id = $1
+		`, discoveryID).Scan(&headline, &eventTitle)
 	}
 
-	// Fetch verified claims for source-grounded references
+	var origins, earlyAmbitions, disadvantages, rejections, obstacles, turningPoints, careerProgression, breakthrough string
+	_ = db.DB.QueryRowContext(ctx, `
+		SELECT origins_summary, early_ambitions, disadvantages, rejections_and_failures,
+		       obstacles, turning_points, career_progression, recent_breakthrough
+		FROM underdog_assessments WHERE person_id = $1 LIMIT 1
+	`, personID).Scan(&origins, &earlyAmbitions, &disadvantages, &rejections, &obstacles, &turningPoints, &careerProgression, &breakthrough)
+
+	// Fetch verified claims for source-grounded attribution
 	rows, _ := db.DB.QueryContext(ctx, `
-		SELECT c.id, COALESCE(c.source_id, ''), c.claim_text, COALESCE(s.url, 'https://en.wikipedia.org')
+		SELECT c.id, COALESCE(c.source_id, ''), COALESCE(c.category, ''), c.claim_text,
+		       COALESCE(s.url, 'https://en.wikipedia.org'), COALESCE(c.verification_status, 'Verified')
 		FROM research_claims c
 		LEFT JOIN research_sources s ON s.id = c.source_id
 		WHERE c.person_id = $1
 		ORDER BY c.created_at ASC
 	`, personID)
-	type claimRef struct {
-		claimID  string
-		sourceID string
-		text     string
-		url      string
-	}
-	var claims []claimRef
+	var claims []ScriptClaimRef
 	if rows != nil {
 		for rows.Next() {
-			var cr claimRef
-			if rows.Scan(&cr.claimID, &cr.sourceID, &cr.text, &cr.url) == nil {
+			var cr ScriptClaimRef
+			if rows.Scan(&cr.ClaimID, &cr.SourceID, &cr.Category, &cr.Text, &cr.URL, &cr.Status) == nil {
 				claims = append(claims, cr)
 			}
 		}
 		rows.Close()
 	}
-	getClaim := func(idx int) claimRef {
+
+	// Fetch chronological timeline entries
+	var timelineEntries []string
+	tRows, _ := db.DB.QueryContext(ctx, `
+		SELECT COALESCE(title, ''), COALESCE(description, '')
+		FROM person_timelines WHERE person_id = $1 ORDER BY chronological_order ASC
+	`, personID)
+	if tRows != nil {
+		for tRows.Next() {
+			var tTitle, tDesc string
+			if tRows.Scan(&tTitle, &tDesc) == nil {
+				entry := strings.TrimSpace(tDesc)
+				if entry != "" {
+					timelineEntries = append(timelineEntries, entry)
+				}
+			}
+		}
+		tRows.Close()
+	}
+
+	bioInput := BiographyInput{
+		PersonName:        personName,
+		Category:          category,
+		Country:           country,
+		ProjectTitle:      projectTitle,
+		Summary:           summary,
+		Biography:         bio,
+		Headline:          headline,
+		EventTitle:        eventTitle,
+		Origins:           origins,
+		EarlyAmbitions:    earlyAmbitions,
+		Disadvantages:     disadvantages,
+		Rejections:        rejections,
+		Obstacles:         obstacles,
+		TurningPoints:     turningPoints,
+		CareerProgression: careerProgression,
+		Breakthrough:      breakthrough,
+		Claims:            claims,
+		TimelineEntries:   timelineEntries,
+	}
+
+	domain := ResolveBiographicalDomain(category, bio, summary, headline, biographicalField)
+	openingHook, sections := BuildDeterministicDocumentaryScript(bioInput, domain, targetDurationMinutes)
+
+	getClaim := func(idx int) ScriptClaimRef {
 		if len(claims) == 0 {
-			return claimRef{claimID: "", sourceID: "", text: summary, url: "https://en.wikipedia.org"}
+			return ScriptClaimRef{Text: summary, URL: "https://en.wikipedia.org"}
 		}
 		return claims[idx%len(claims)]
 	}
 
-	openingHook := fmt.Sprintf("In the final seconds before history changes forever, the stadium noise fades into a single heartbeat. Nobody in the traditional power centers of the sport expected %s to be standing here. Yet this is the exact moment when years of unseen struggle collided with destiny: %s.", personName, breakthrough)
-
-	sections := []ScriptSection{
-		{
-			ActNumber: 1,
-			Title:     "Act I — The Cold Open & The Impossible Moment",
-			Paragraphs: []string{
-				openingHook,
-				fmt.Sprintf("To understand why the world stopped to watch %s, you cannot begin with the medals, the cameras, or the headlines. You have to rewind to a place where there were no cameras at all—only raw ambition and a refusal to accept the limits everyone else considered permanent.", personName),
-				fmt.Sprintf("Verified archival records confirm the scale of what was achieved: %s", getClaim(0).text),
-			},
-			ClaimID:     getClaim(0).claimID,
-			SourceID:    getClaim(0).sourceID,
-			CitationURL: getClaim(0).url,
-		},
-		{
-			ActNumber: 2,
-			Title:     "Act II — Humble Origins & The Early Spark",
-			Paragraphs: []string{
-				origins,
-				fmt.Sprintf("While better-funded peers trained inside state-of-the-art academies, %s learned to treat scarcity as fuel. Every borrowed hour of practice and every regional tournament traveled on a shoestring budget sharpened an unmistakable competitive edge.", personName),
-				fmt.Sprintf("Biographical documentation from this formative period highlights the foundation: %s", getClaim(1).text),
-			},
-			ClaimID:     getClaim(1).claimID,
-			SourceID:    getClaim(1).sourceID,
-			CitationURL: getClaim(1).url,
-		},
-		{
-			ActNumber: 3,
-			Title:     "Act III — Structural Disadvantages & The Crucible of Rejection",
-			Paragraphs: []string{
-				fmt.Sprintf("Every authentic underdog story reaches a wall where talent alone is no longer enough. For %s, those barriers were concrete and unforgiving: %s", personName, disadvantages),
-				fmt.Sprintf("Then came the setbacks that test whether an ambition survives reality. %s", rejections),
-				fmt.Sprintf("Historical reporting captures the weight of this chapter: %s", getClaim(2).text),
-			},
-			ClaimID:     getClaim(2).claimID,
-			SourceID:    getClaim(2).sourceID,
-			CitationURL: getClaim(2).url,
-		},
-		{
-			ActNumber: 4,
-			Title:     "Act IV — The Turning Point & Tactical Reinvention",
-			Paragraphs: []string{
-				fmt.Sprintf("Instead of retreating after early defeats, %s rebuilt from the inside out. %s", personName, obstacles),
-				turningPoints,
-				fmt.Sprintf("Match by match, round by round, the narrative began to shift: %s", getClaim(3).text),
-			},
-			ClaimID:     getClaim(3).claimID,
-			SourceID:    getClaim(3).sourceID,
-			CitationURL: getClaim(3).url,
-		},
-		{
-			ActNumber: 5,
-			Title:     "Act V — The Against-All-Odds Breakthrough",
-			Paragraphs: []string{
-				fmt.Sprintf("When the championship stage finally arrived, %s stood across from opponents who carried every statistical advantage. Yet composure under maximum pressure revealed who had truly prepared for the crucible.", personName),
-				fmt.Sprintf("The decisive breakthrough unfolded in real time: %s", breakthrough),
-				fmt.Sprintf("Primary source records document the climax: %s", getClaim(4).text),
-			},
-			ClaimID:     getClaim(4).claimID,
-			SourceID:    getClaim(4).sourceID,
-			CitationURL: getClaim(4).url,
-		},
-		{
-			ActNumber: 6,
-			Title:     "Act VI — Aftermath, Legacy & What The Victory Proves",
-			Paragraphs: []string{
-				fmt.Sprintf("Within hours, the victory of %s echoed far beyond a single scoreboard. For an entire generation watching from small towns and overlooked clubs, the message was unmistakable: pedigree does not own the future.", personName),
-				fmt.Sprintf("As confirmed across global coverage (%s), the story of %s is no longer just an upset—it is the new blueprint for resilience.", getClaim(5).text, personName),
-			},
-			ClaimID:     getClaim(5).claimID,
-			SourceID:    getClaim(5).sourceID,
-			CitationURL: getClaim(5).url,
-		},
-	}
-
-	// Dynamic Google Gemini AI Generation if key is active
+	// Dynamic 2-stage Google Gemini AI Generation if key is active
+	usedGemini := false
 	if ai.HasGeminiKey(ctx) {
 		var claimsBuilder strings.Builder
 		for idx, c := range claims {
-			claimsBuilder.WriteString(fmt.Sprintf("[%d] %s (URL: %s)\n", idx+1, c.text, c.url))
+			claimsBuilder.WriteString(fmt.Sprintf("[%d | %s | %s] %s (Source: %s)\n", idx+1, c.Status, c.Category, c.Text, c.URL))
 		}
-		hookAI, actsAI, errAI := ai.GenerateScriptWithGemini(ctx, personName, projectTitle, targetDurationMinutes, style, bio, claimsBuilder.String())
-		if errAI == nil && len(actsAI) > 0 {
-			if hookAI != "" {
-				openingHook = hookAI
+		assessmentSummary := fmt.Sprintf("Origins: %s\nEarly Ambitions: %s\nDisadvantages: %s\nRejections/Setbacks: %s\nObstacles: %s\nTurning Points: %s\nProgression: %s\nBreakthrough: %s",
+			origins, earlyAmbitions, disadvantages, rejections, obstacles, turningPoints, careerProgression, breakthrough)
+
+		aiDoc, errAI := ai.GenerateDocumentaryScriptWithGemini(
+			ctx, personName, category, country, projectTitle, targetDurationMinutes,
+			style, biographicalField, bio, claimsBuilder.String(), assessmentSummary,
+		)
+		if errAI == nil && aiDoc != nil && len(aiDoc.Chapters) > 0 {
+			usedGemini = true
+			if strings.TrimSpace(aiDoc.OpeningHook) != "" {
+				openingHook = strings.TrimSpace(aiDoc.OpeningHook)
 			}
-			var dynamicSections []ScriptSection
-			for _, act := range actsAI {
-				claim := getClaim(act.ActNumber - 1)
-				dynamicSections = append(dynamicSections, ScriptSection{
-					ActNumber:   act.ActNumber,
-					Title:       act.Title,
-					Paragraphs:  act.Paragraphs,
-					ClaimID:     claim.claimID,
-					SourceID:    claim.sourceID,
-					CitationURL: claim.url,
+			detectedField := domain.Label
+			if strings.TrimSpace(aiDoc.DetectedField) != "" {
+				detectedField = strings.TrimSpace(aiDoc.DetectedField)
+			}
+			centralQ := domain.CentralQuestion
+			if strings.TrimSpace(aiDoc.CentralQuestion) != "" {
+				centralQ = strings.TrimSpace(aiDoc.CentralQuestion)
+			}
+
+			var mergedSections []ScriptSection
+			for idx, ch := range aiDoc.Chapters {
+				if len(ch.Shots) == 0 && idx < len(sections) {
+					// Preserve deterministic fallback for any chapter that failed transiently
+					fallback := sections[idx]
+					fallback.DomainField = detectedField
+					fallback.CentralQuestion = centralQ
+					mergedSections = append(mergedSections, fallback)
+					continue
+				}
+				var shots []ScriptShot
+				chTitle := strings.TrimSpace(ch.Title)
+				if chTitle == "" && idx < len(domain.ChapterTitles) {
+					chTitle = domain.ChapterTitles[idx]
+				}
+				if !strings.Contains(chTitle, "·") {
+					chTitle = fmt.Sprintf("%d · %s", ch.ChapterNumber, chTitle)
+				}
+				for _, s := range ch.Shots {
+					shots = append(shots, ScriptShot{
+						Visual:          s.Visual,
+						Narration:       s.Narration,
+						AudioCue:        s.AudioCue,
+						DurationSeconds: s.DurationSeconds,
+						LocationRef:     s.LocationRef,
+						ChapterNumber:   ch.ChapterNumber,
+						ChapterTitle:    chTitle,
+					})
+				}
+				claim := getClaim(idx)
+				mergedSections = append(mergedSections, ScriptSection{
+					ActNumber:       idx + 1,
+					ChapterNumber:   ch.ChapterNumber,
+					Title:           chTitle,
+					DomainField:     detectedField,
+					CentralQuestion: centralQ,
+					Shots:           shots,
+					ClaimID:         claim.ClaimID,
+					SourceID:        claim.SourceID,
+					CitationURL:     claim.URL,
 				})
 			}
-			if len(dynamicSections) > 0 {
-				sections = dynamicSections
+			if len(mergedSections) > 0 {
+				sections = EnforceMaxSevenSecondPacing(mergedSections, domain, bioInput, targetDurationMinutes)
 			}
 		}
 	}
 
-	var allParas []string
+	fullText := FormatRealignedScript(sections)
+	spokenText := ExtractSpokenNarration(fullText)
+	wordCount := len(strings.Fields(spokenText))
+	totalShots := 0
+	estSeconds := 0
 	for _, sec := range sections {
-		for _, p := range sec.Paragraphs {
-			allParas = append(allParas, p)
+		totalShots += len(sec.Shots)
+		for _, sh := range sec.Shots {
+			estSeconds += int(math.Round(sh.DurationSeconds))
 		}
 	}
-	fullText := strings.Join(allParas, "\n\n")
-	wordCount := len(strings.Fields(fullText))
-	estSeconds := targetDurationMinutes * 60
+	if estSeconds < 60 {
+		estSeconds = targetDurationMinutes * 60
+	}
 
 	var scriptID string
 	var currentVer int
@@ -1225,99 +1242,83 @@ func GenerateDocumentaryScript(ctx context.Context, projectID string, targetDura
 		`, scriptID, currentVer, openingHook, fullText, wordCount, estSeconds)
 	}
 
+	// Sync project target duration and <=7s pacing interval
+	_, _ = db.DB.ExecContext(ctx, `
+		UPDATE documentary_projects
+		SET target_duration_minutes = $2, image_interval_seconds = 7, updated_at = NOW()
+		WHERE id = $1
+	`, projectID, targetDurationMinutes)
+
+	engineTag := "Domain-Dynamic Biographical Engine"
+	if usedGemini {
+		engineTag = "Gemini 2-Stage Investigative Engine"
+	}
+	detectedLabel := domain.Label
+	if len(sections) > 0 && sections[0].DomainField != "" {
+		detectedLabel = sections[0].DomainField
+	}
+
 	secBytes, _ := json.Marshal(sections)
 	_, _ = db.DB.ExecContext(ctx, `
 		INSERT INTO script_versions (id, script_id, version_number, sections_json, full_narration_text, word_count, estimated_duration_seconds, change_summary, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DocumentaryWriterAgent')
-	`, "sver-"+uuid.NewString()[:8], scriptID, currentVer, string(secBytes), fullText, wordCount, estSeconds, fmt.Sprintf("Generated %d-minute source-grounded continuous narration (%s)", targetDurationMinutes, style))
+	`, "sver-"+uuid.NewString()[:8], scriptID, currentVer, string(secBytes), fullText, wordCount, estSeconds,
+		fmt.Sprintf("%d-min realigned documentary (%s | %d shots <=7s/cut | %s)", targetDurationMinutes, detectedLabel, totalShots, engineTag))
 
 	_, _ = db.DB.ExecContext(ctx, `DELETE FROM script_references WHERE script_id = $1`, scriptID)
 	for sIdx, sec := range sections {
-		for pIdx := range sec.Paragraphs {
-			var cPtr, sPtr *string
-			if sec.ClaimID != "" {
-				c := sec.ClaimID
-				cPtr = &c
-			}
-			if sec.SourceID != "" {
-				s := sec.SourceID
-				sPtr = &s
-			}
-			_, _ = db.DB.ExecContext(ctx, `
-				INSERT INTO script_references (id, script_id, section_index, paragraph_index, claim_id, source_id, citation_note)
-				VALUES ($1, $2, $3, $4, $5, $6, $7)
-			`, "sref-"+uuid.NewString()[:8], scriptID, sIdx, pIdx, cPtr, sPtr, fmt.Sprintf("Verified Reference (%s): %s", sec.Title, sec.CitationURL))
+		var cPtr, sPtr *string
+		if sec.ClaimID != "" {
+			c := sec.ClaimID
+			cPtr = &c
 		}
+		if sec.SourceID != "" {
+			s := sec.SourceID
+			sPtr = &s
+		}
+		_, _ = db.DB.ExecContext(ctx, `
+			INSERT INTO script_references (id, script_id, section_index, paragraph_index, claim_id, source_id, citation_note)
+			VALUES ($1, $2, $3, 0, $4, $5, $6)
+		`, "sref-"+uuid.NewString()[:8], scriptID, sIdx, cPtr, sPtr, fmt.Sprintf("Verified Reference (%s): %s", sec.Title, sec.CitationURL))
 	}
 
 	return scriptID, nil
 }
 
-// 8. VISUAL PROMPT AGENT (Character Consistency Sheets + 5-10s Google Flow Visual Timeline)
+// 8. VISUAL PROMPT AGENT (Domain-Adaptive Character Consistency Sheets + <=7s Google Flow Visual Timeline)
 func GenerateCharacterReferences(ctx context.Context, projectID string) ([]string, error) {
 	var personID, visualStyle string
 	err := db.DB.QueryRowContext(ctx, `SELECT person_id, visual_style FROM documentary_projects WHERE id = $1`, projectID).Scan(&personID, &visualStyle)
 	if err != nil {
 		return nil, err
 	}
-	var personName, country string
-	_ = db.DB.QueryRowContext(ctx, `SELECT canonical_name, country FROM people WHERE id = $1`, personID).Scan(&personName, &country)
+	var personName, category, country, summary, bio string
+	_ = db.DB.QueryRowContext(ctx, `
+		SELECT canonical_name, COALESCE(category, ''), COALESCE(country, ''), COALESCE(summary, ''), COALESCE(biography, '')
+		FROM people WHERE id = $1
+	`, personID).Scan(&personName, &category, &country, &summary, &bio)
+
+	domain := ResolveBiographicalDomain(category, bio, summary, "", "auto")
 
 	_, _ = db.DB.ExecContext(ctx, `DELETE FROM character_references WHERE project_id = $1`, projectID)
 
-	profiles := []struct {
-		Role       string
-		AgeRange   string
-		Appearance string
-		Hair       string
-		Clothing   string
-		Body       string
-		Locations  string
-		Palette    string
-	}{
-		{
-			Role:       "Main Subject — Formative Youth",
-			AgeRange:   "Ages 10–15 (Early Training Era)",
-			Appearance: fmt.Sprintf("Young %s with focused, observant eyes, natural skin texture, subtle determination before international fame.", personName),
-			Hair:       "Short, natural, neatly kept hair consistent with early archival photographs.",
-			Clothing:   "Simple worn training jersey, modest local club warm-up jacket, scuffed athletic shoes.",
-			Body:       "Lean adolescent athletic build, slightly undersized compared to older competitors.",
-			Locations:  fmt.Sprintf("Community training hall and weathered outdoor practice court in %s under warm late-afternoon dust and tungsten bulbs.", country),
-			Palette:    "Warm amber, muted slate, dusty ochre, deep shadow contrast",
-		},
-		{
-			Role:       "Main Subject — Contender & Crucible Era",
-			AgeRange:   "Ages 16–19 (Qualification & Setback Era)",
-			Appearance: fmt.Sprintf("%s in young adulthood, sharper jawline, intense concentration under tournament fatigue.", personName),
-			Hair:       "Consistent signature hairstyle, slightly damp from high-stakes competition.",
-			Clothing:   "National federation travel tracksuit, credential lanyard, travel backpack.",
-			Body:       "Fully developed athletic posture, poised and coiled energy.",
-			Locations:  "Quiet locker room corridors, transit lounges, rain-streaked tournament buses, regional championship arenas.",
-			Palette:    "Cool steel blue, fluorescent stadium greens, high-contrast shadow",
-		},
-		{
-			Role:       "Main Subject — Historic Breakthrough Champion",
-			AgeRange:   "Current Championship Peak",
-			Appearance: fmt.Sprintf("%s at the pinnacle of global competition, calm intensity transitioning into triumphant emotion.", personName),
-			Hair:       "Crisp championship-day grooming under bright arena key lights.",
-			Clothing:   "Official championship competition kit with national emblem and finals bib.",
-			Body:       "Commanding athletic presence, upright victorious posture.",
-			Locations:  "Packed international championship stadium, floodlit center stage, press flashbulbs.",
-			Palette:    "Championship gold, deep midnight navy, crisp stadium white",
-		},
-	}
-
 	var charIDs []string
-	for idx, p := range profiles {
+	for idx, p := range domain.CharacterEras {
 		charID := "char-" + uuid.NewString()[:8]
 		svgName := fmt.Sprintf("char-%s-%d.svg", projectID, idx+1)
 		svgFullPath := filepath.Join(db.StorageRoot, "characters", svgName)
 		svgWebURL := "/storage/characters/" + svgName
 
-		masterPrompt := fmt.Sprintf("[GOOGLE FLOW CHARACTER LOCK: %s (%s)] %s | Hair: %s | Attire: %s | Proportions: %s | Environment: %s | Style: %s | Palette: %s --ar 16:9",
-			personName, p.AgeRange, p.Appearance, p.Hair, p.Clothing, p.Body, p.Locations, visualStyle, p.Palette)
+		appearance := fmt.Sprintf("%s (%s): %s", personName, domain.Label, p.Appearance)
+		locations := p.Locations
+		if country != "" && !strings.Contains(strings.ToLower(locations), strings.ToLower(country)) {
+			locations = fmt.Sprintf("%s (%s)", locations, country)
+		}
 
-		_ = services.GenerateStoryboardSVG(svgFullPath, fmt.Sprintf("%s — %s", personName, p.AgeRange), p.Appearance, fmt.Sprintf("CHAR REF 0%d", idx+1), p.Role, p.Palette)
+		masterPrompt := fmt.Sprintf("[GOOGLE FLOW CHARACTER LOCK: %s (%s)] %s | Hair: %s | Attire: %s | Proportions: %s | Environment: %s | Style: %s | Palette: %s --ar 16:9",
+			personName, p.AgeRange, appearance, p.Hair, p.Clothing, p.Body, locations, visualStyle, p.Palette)
+
+		_ = services.GenerateStoryboardSVG(svgFullPath, fmt.Sprintf("%s — %s", personName, p.AgeRange), appearance, fmt.Sprintf("CHAR REF 0%d", idx+1), p.Role, p.Palette)
 
 		_, err := db.DB.ExecContext(ctx, `
 			INSERT INTO character_references (
@@ -1327,7 +1328,7 @@ func GenerateCharacterReferences(ctx context.Context, projectID string) ([]strin
 				visual_style, color_palette, master_prompt, reference_image_path
 			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		`, charID, projectID, personID, personName, p.Role, p.AgeRange,
-			p.Appearance, p.Hair, p.Clothing, p.Body, p.Locations,
+			appearance, p.Hair, p.Clothing, p.Body, locations,
 			"35mm documentary lens, shallow depth of field, authentic atmospheric grain, zero text overlays",
 			visualStyle, p.Palette, masterPrompt, svgWebURL)
 		if err == nil {
@@ -1351,12 +1352,17 @@ func GenerateVisualTimeline(ctx context.Context, projectID string) (int, error) 
 	_ = db.DB.QueryRowContext(ctx, `
 		SELECT person_id, visual_style, image_interval_seconds FROM documentary_projects WHERE id = $1
 	`, projectID).Scan(&personID, &visualStyle, &intervalSec)
-	if intervalSec < 5 || intervalSec > 10 {
-		intervalSec = 8
+	if intervalSec < 3 || intervalSec > 7 {
+		intervalSec = 7
 	}
+	maxDur := float64(intervalSec)
 
-	var personName string
-	_ = db.DB.QueryRowContext(ctx, `SELECT canonical_name FROM people WHERE id = $1`, personID).Scan(&personName)
+	var personName, category, summary, bio string
+	_ = db.DB.QueryRowContext(ctx, `
+		SELECT canonical_name, COALESCE(category, ''), COALESCE(summary, ''), COALESCE(biography, '')
+		FROM people WHERE id = $1
+	`, personID).Scan(&personName, &category, &summary, &bio)
+	domain := ResolveBiographicalDomain(category, bio, summary, "", "auto")
 
 	// Ensure character references exist
 	rows, _ := db.DB.QueryContext(ctx, `SELECT id, age_range, locations_description, color_palette, master_prompt FROM character_references WHERE project_id = $1 ORDER BY created_at ASC`, projectID)
@@ -1391,75 +1397,235 @@ func GenerateVisualTimeline(ctx context.Context, projectID string) (int, error) 
 		}
 	}
 
-	// Break continuous narration into sentence/clause beats of ~5-10 seconds each
-	sentences := splitSentences(fullText)
-	var beats []string
-	for _, s := range sentences {
-		words := strings.Fields(s)
-		if len(words) > 26 {
-			mid := len(words) / 2
-			beats = append(beats, strings.Join(words[:mid], " "))
-			beats = append(beats, strings.Join(words[mid:], " "))
-		} else if len(words) > 0 {
-			beats = append(beats, s)
+	// 1. Prefer structured <=7s shots stored in the latest script_versions.sections_json
+	var shots []ScriptShot
+	var latestSectionsJSON string
+	_ = db.DB.QueryRowContext(ctx, `
+		SELECT sections_json FROM script_versions WHERE script_id = $1 ORDER BY version_number DESC LIMIT 1
+	`, scriptID).Scan(&latestSectionsJSON)
+	if latestSectionsJSON != "" && latestSectionsJSON != "[]" {
+		var savedSections []ScriptSection
+		if json.Unmarshal([]byte(latestSectionsJSON), &savedSections) == nil {
+			for _, sec := range savedSections {
+				shots = append(shots, sec.Shots...)
+			}
 		}
 	}
 
-	_, _ = db.DB.ExecContext(ctx, `DELETE FROM visual_segments WHERE project_id = $1`, projectID)
-
-	currentTime := 0.0
-	cameraAngles := []string{
-		"Medium close-up 35mm documentary still, shallow depth of field",
-		"Wide environmental establishing frame, natural volumetric lighting",
-		"Low-angle heroic documentary composition, dramatic rim lighting",
-		"Over-the-shoulder intimate observational shot, authentic film grain",
-		"Tight telephoto portrait capturing intense focus and micro-expression",
+	// 2. Otherwise parse realigned [M:SS] VISUAL blocks directly from full_narration_text
+	if len(shots) == 0 {
+		shots = ParseRealignedScriptShots(fullText, domain)
 	}
 
-	for idx, passage := range beats {
-		wordCount := len(strings.Fields(passage))
-		dur := math.Round(math.Max(5.0, math.Min(10.0, float64(wordCount)/2.6))*10) / 10
-		startSec := currentTime
-		endSec := math.Round((currentTime+dur)*10) / 10
-		currentTime = endSec
+	// 3. Fallback for plain prose scripts: split into <=7s beats with cutaway visuals
+	if len(shots) == 0 {
+		sentences := splitSentences(ExtractSpokenNarration(fullText))
+		cutIdx := 0
+		curSec := 0.0
+		for _, s := range sentences {
+			chunks := splitNarrationToSevenSecondChunks(s, MaxWordsPerShot)
+			for ci, chunk := range chunks {
+				dur := math.Min(maxDur, estimateShotSeconds(chunk, maxDur, len(chunks) > 1))
+				isCutaway := ci > 0
+				chNum := (cutIdx / 20) % 7
+				shots = append(shots, ScriptShot{
+					ShotNumber:      len(shots) + 1,
+					Timestamp:       formatMMSS(int(math.Round(curSec))),
+					StartSeconds:    curSec,
+					EndSeconds:      curSec + dur,
+					DurationSeconds: dur,
+					Visual:          pickShotVisual(domain, chNum, cutIdx, isCutaway),
+					Narration:       chunk,
+					LocationRef:     domain.ChapterLocations[chNum],
+					ChapterNumber:   chNum,
+				})
+				curSec += dur
+				cutIdx++
+			}
+		}
+	}
 
+	// Guarantee strict <= maxDur (<= 7.0s) across every single visual segment
+	var finalShots []ScriptShot
+	curSec := 0.0
+	for i, sh := range shots {
+		dur := sh.DurationSeconds
+		if dur <= 0 {
+			dur = estimateShotSeconds(sh.Narration, maxDur, false)
+		}
+		if dur > maxDur {
+			dur = maxDur
+		}
+		if dur < MinShotDurationSeconds {
+			dur = MinShotDurationSeconds
+		}
+		sh.ShotNumber = i + 1
+		sh.StartSeconds = math.Round(curSec*10) / 10
+		sh.EndSeconds = math.Round((curSec+dur)*10) / 10
+		sh.DurationSeconds = math.Round(dur*10) / 10
+		curSec = sh.EndSeconds
+		finalShots = append(finalShots, sh)
+	}
+
+	type preparedSegment struct {
+		segID       string
+		assetID     string
+		num         int
+		code        string
+		startSec    float64
+		endSec      float64
+		dur         float64
+		passage     string
+		imgPrompt   string
+		charID      string
+		charAge     string
+		locRef      string
+		palette     string
+		imgFullPath string
+		imgWebURL   string
+		tsRange     string
+	}
+
+	prepared := make([]preparedSegment, len(finalShots))
+	for idx, sh := range finalShots {
 		charIdx := 0
-		if idx >= len(beats)/3 && idx < (2*len(beats))/3 && len(chars) > 1 {
+		if sh.ChapterNumber >= 4 && sh.ChapterNumber <= 5 && len(chars) > 1 {
 			charIdx = 1
-		} else if idx >= (2*len(beats))/3 && len(chars) > 2 {
+		}
+		if (sh.ChapterNumber == 0 || sh.ChapterNumber >= 5) && len(chars) > 2 {
 			charIdx = 2
 		}
-		activeChar := chars[charIdx]
-		angle := cameraAngles[idx%len(cameraAngles)]
+		if len(chars) == 0 {
+			chars = append(chars, charInfo{id: "", ageRange: "Main Subject", loc: domain.OpeningRoom, palette: "Muted slate, warm amber"})
+		}
+		activeChar := chars[charIdx%len(chars)]
+
+		locRef := strings.TrimSpace(sh.LocationRef)
+		if locRef == "" {
+			locRef = activeChar.loc
+		}
+
+		passage := strings.TrimSpace(sh.Narration)
+		if passage == "" {
+			cue := strings.TrimSpace(sh.AudioCue)
+			if cue == "" {
+				cue = "Silence"
+			}
+			passage = fmt.Sprintf("(Audio: %s)", cue)
+		}
+
 		segCode := fmt.Sprintf("SEG-%03d", idx+1)
 		segID := "seg-" + uuid.NewString()[:8]
+		assetID := "img-" + uuid.NewString()[:8]
 
-		imgPrompt := fmt.Sprintf("%s. Subject: %s (%s). Scene action matching narration: \"%s\". Setting: %s. Style: %s. Color Palette: %s. Photorealistic archival documentary still, no text, 16:9.",
-			angle, personName, activeChar.ageRange, passage, activeChar.loc, visualStyle, activeChar.palette)
+		imgPrompt := fmt.Sprintf("%s Subject: %s (%s). Beat: \"%s\". Setting: %s. Style: %s. Color Palette: %s. Photorealistic archival documentary still, no text, 16:9.",
+			strings.TrimSpace(sh.Visual), personName, activeChar.ageRange, passage, locRef, visualStyle, activeChar.palette)
 
 		imgFileName := fmt.Sprintf("frame-%s-%03d.svg", projectID, idx+1)
 		imgFullPath := filepath.Join(db.StorageRoot, "images", imgFileName)
 		imgWebURL := "/storage/images/" + imgFileName
-		tsRange := fmt.Sprintf("%s -> %s (%.1fs)", services.FormatSRTTime(startSec), services.FormatSRTTime(endSec), dur)
+		tsRange := fmt.Sprintf("%s -> %s (%.1fs)", services.FormatSRTTime(sh.StartSeconds), services.FormatSRTTime(sh.EndSeconds), sh.DurationSeconds)
 
-		_ = services.GenerateStoryboardSVG(imgFullPath, fmt.Sprintf("%s (%s)", personName, activeChar.ageRange), passage, segCode, tsRange, activeChar.palette)
+		prepared[idx] = preparedSegment{
+			segID:       segID,
+			assetID:     assetID,
+			num:         idx + 1,
+			code:        segCode,
+			startSec:    sh.StartSeconds,
+			endSec:      sh.EndSeconds,
+			dur:         sh.DurationSeconds,
+			passage:     passage,
+			imgPrompt:   imgPrompt,
+			charID:      activeChar.id,
+			charAge:     activeChar.ageRange,
+			locRef:      locRef,
+			palette:     activeChar.palette,
+			imgFullPath: imgFullPath,
+			imgWebURL:   imgWebURL,
+			tsRange:     tsRange,
+		}
+	}
 
-		assetID := "img-" + uuid.NewString()[:8]
-		_, _ = db.DB.ExecContext(ctx, `
+	// Render storyboard SVG frames concurrently using a bounded worker pool
+	var svgWG sync.WaitGroup
+	svgSem := make(chan struct{}, 8)
+	for _, p := range prepared {
+		svgWG.Add(1)
+		go func(ps preparedSegment) {
+			defer svgWG.Done()
+			svgSem <- struct{}{}
+			defer func() { <-svgSem }()
+			_ = services.GenerateStoryboardSVG(ps.imgFullPath, fmt.Sprintf("%s (%s)", personName, ps.charAge), ps.passage, ps.code, ps.tsRange, ps.palette)
+		}(p)
+	}
+	svgWG.Wait()
+
+	// Batch-insert image_assets and visual_segments in a single transaction (fast even over remote Postgres)
+	tx, err := db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, _ = tx.ExecContext(ctx, `DELETE FROM visual_segments WHERE project_id = $1`, projectID)
+	_, _ = tx.ExecContext(ctx, `DELETE FROM image_assets WHERE project_id = $1`, projectID)
+
+	const batchSize = 40
+	for start := 0; start < len(prepared); start += batchSize {
+		end := start + batchSize
+		if end > len(prepared) {
+			end = len(prepared)
+		}
+		chunk := prepared[start:end]
+
+		var imgVals []string
+		var imgArgs []any
+		argIdx := 1
+		for _, p := range chunk {
+			var charPtr *string
+			if p.charID != "" {
+				c := p.charID
+				charPtr = &c
+			}
+			imgVals = append(imgVals, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,'TrendScout Storyboard Engine (Google Flow Ready)',1920,1080,'ready')",
+				argIdx, argIdx+1, argIdx+2, argIdx+3, argIdx+4, argIdx+5, argIdx+6))
+			imgArgs = append(imgArgs, p.assetID, projectID, p.segID, charPtr, p.imgFullPath, p.imgWebURL, p.imgPrompt)
+			argIdx += 7
+		}
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO image_assets (id, project_id, segment_id, character_ref_id, file_path, file_url, prompt_used, provider, width, height, status)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'TrendScout Storyboard Engine (Google Flow Ready)', 1920, 1080, 'ready')
-		`, assetID, projectID, segID, activeChar.id, imgFullPath, imgWebURL, imgPrompt)
+			VALUES `+strings.Join(imgVals, ","), imgArgs...); err != nil {
+			return 0, err
+		}
 
-		_, _ = db.DB.ExecContext(ctx, `
+		var segVals []string
+		var segArgs []any
+		argIdx = 1
+		for _, p := range chunk {
+			var charPtr *string
+			if p.charID != "" {
+				c := p.charID
+				charPtr = &c
+			}
+			segVals = append(segVals, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,'generated',$%d)",
+				argIdx, argIdx+1, argIdx+2, argIdx+3, argIdx+4, argIdx+5, argIdx+6, argIdx+7, argIdx+8, argIdx+9, argIdx+10, argIdx+11, argIdx+12))
+			segArgs = append(segArgs, p.segID, projectID, scriptID, p.num, p.code, p.startSec, p.endSec, p.dur, p.passage, p.imgPrompt, charPtr, p.locRef, p.assetID)
+			argIdx += 13
+		}
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO visual_segments (
 				id, project_id, script_id, segment_number, segment_code,
 				start_seconds, end_seconds, duration_seconds, narration_passage,
 				image_prompt, character_ref_id, location_ref, generation_status, image_asset_id
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'generated',$13)
-		`, segID, projectID, scriptID, idx+1, segCode, startSec, endSec, dur, passage, imgPrompt, activeChar.id, activeChar.loc, assetID)
+			) VALUES `+strings.Join(segVals, ","), segArgs...); err != nil {
+			return 0, err
+		}
 	}
 
-	return len(beats), nil
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(prepared), nil
 }
 
 // 9. PRODUCTION AGENT (Audio, Subtitles, ZIP Package & FFmpeg MP4 Assembly)
@@ -1476,7 +1642,8 @@ func GenerateProjectAudioAndSubtitles(ctx context.Context, projectID string) (st
 	audioFullPath := filepath.Join(db.StorageRoot, "audio", audioFileName)
 	audioWebURL := "/storage/audio/" + audioFileName
 
-	durSec, providerName, err := services.GenerateNarrationAudio(ctx, audioFullPath, fullText)
+	spokenNarration := ExtractSpokenNarration(fullText)
+	durSec, providerName, err := services.GenerateNarrationAudio(ctx, audioFullPath, spokenNarration)
 	if err != nil {
 		return "", "", err
 	}
@@ -1486,7 +1653,7 @@ func GenerateProjectAudioAndSubtitles(ctx context.Context, projectID string) (st
 	_, err = db.DB.ExecContext(ctx, `
 		INSERT INTO audio_assets (id, project_id, title, file_path, file_url, provider, voice_id, duration_seconds, transcript_text, is_master_narration, status)
 		VALUES ($1, $2, $3, $4, $5, $6, 'Documentary-Baritone-Master', $7, $8, TRUE, 'ready')
-	`, audioID, projectID, title+" — Master Narration", audioFullPath, audioWebURL, providerName, durSec, fullText)
+	`, audioID, projectID, title+" — Master Narration", audioFullPath, audioWebURL, providerName, durSec, spokenNarration)
 	if err != nil {
 		return "", "", err
 	}

@@ -218,7 +218,7 @@ export const MyDocumentariesPage: React.FC = () => {
       <div>
         <h1 className="text-2xl font-black text-display text-nexa-text-primary">My Documentary Projects</h1>
         <p className="text-xs text-nexa-text-secondary mt-1">
-          Manage long-form 20-minute scripts, 5–10s Google Flow visual timelines, character reference locks, narration audio, and ZIP/MP4 exports.
+          Manage long-form 20-minute realigned documentary scripts, ≤7s Google Flow visual timelines, character reference locks, narration audio, and ZIP/MP4 exports.
         </p>
       </div>
 
@@ -289,12 +289,17 @@ export const ProductionStudioPage: React.FC = () => {
   const [ws, setWs] = useState<any>(null);
   const [scriptText, setScriptText] = useState('');
   const [durationMinutes, setDurationMinutes] = useState(20);
+  const [biographicalField, setBiographicalField] = useState('auto');
+  const [narrativeStyle, setNarrativeStyle] = useState('Investigative Archival Documentary');
+  const [scriptViewMode, setScriptViewMode] = useState<'realigned' | 'raw'>('realigned');
   const [busy, setBusy] = useState(false);
   const [copiedId, setCopiedId] = useState('');
   const [exportResult, setExportResult] = useState<any>(null);
 
-  const loadWorkspace = (targetId: string) => {
-    apiFetch(`/api/projects/${targetId}`).then((data) => {
+  const loadWorkspace = (targetId?: string) => {
+    const resolvedId = targetId || id || ws?.project?.id;
+    if (!resolvedId) return;
+    apiFetch(`/api/projects/${resolvedId}`).then((data) => {
       setWs(data);
       setScriptText(data.script?.fullNarrationText || '');
       setDurationMinutes(data.project?.targetDurationMinutes || 20);
@@ -355,9 +360,13 @@ export const ProductionStudioPage: React.FC = () => {
     try {
       await apiFetch(`/api/projects/${proj.id}/script/generate`, {
         method: 'POST',
-        body: JSON.stringify({ targetDurationMinutes: durationMinutes, style: 'Cinematic Investigative Storytelling' }),
+        body: JSON.stringify({
+          targetDurationMinutes: durationMinutes,
+          style: narrativeStyle,
+          biographicalField,
+        }),
       });
-      loadWorkspace();
+      loadWorkspace(proj.id);
     } finally {
       setBusy(false);
     }
@@ -545,9 +554,9 @@ export const ProductionStudioPage: React.FC = () => {
             </h2>
             {[
               { label: 'Deep Biographical Research & Claims', count: `${(research.claims || []).length} Verified Claims`, tab: 'research' },
-              { label: 'Continuous Narration Script', count: `v${scr.currentVersion} (${scr.status})`, tab: 'script' },
+              { label: 'Realigned Documentary Script (≤7s Pace)', count: `v${scr.currentVersion} (${scr.shotCount || segs.length} shots)`, tab: 'script' },
               { label: 'Character Consistency Sheets', count: `${chars.length} Age/Era Locks`, tab: 'characters' },
-              { label: '5–10s Visual Timeline & Prompts', count: `${segs.length} Timed Beats`, tab: 'timeline' },
+              { label: '≤7s Visual Timeline & Prompts', count: `${segs.length} Timed Cuts`, tab: 'timeline' },
               { label: 'Storyboard & Generated Frames', count: `${segs.length} 16:9 Assets`, tab: 'images' },
               { label: 'Narration Audio & Alignment', count: `${audios.length} Master Track`, tab: 'audio' },
               { label: 'SRT Subtitles', count: `${subs.length} Timed Track`, tab: 'subtitles' },
@@ -572,16 +581,57 @@ export const ProductionStudioPage: React.FC = () => {
       {activeTab === 'script' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 nexa-card rounded-3xl p-6 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="text-base font-black text-display text-nexa-text-primary">
-                  Continuous Documentary Narration Script (v{scr.currentVersion} • {scr.status})
+                  Realigned Biographical Documentary Script (v{scr.currentVersion} • {scr.status})
                 </h2>
-                <p className="text-xs text-nexa-text-muted">
-                  Continuous storytelling narration grounded in verified research claims.
+                <p className="text-xs text-nexa-text-muted mt-0.5">
+                  Side-by-side narrator monologue &amp; visual shots paced at a maximum of 7 seconds per image.
                 </p>
+                <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                  {scr.biographicalField && (
+                    <span className="px-2.5 py-0.5 rounded-full bg-nexa-brand/10 text-nexa-brand border border-nexa-brand/20 text-[10px] font-extrabold">
+                      Field: {scr.biographicalField}
+                    </span>
+                  )}
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 text-[10px] font-extrabold">
+                    Max Cut Pace: ≤{scr.maxShotDurationSeconds ? Number(scr.maxShotDurationSeconds).toFixed(0) : 7}s / Image
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-nexa-bg-base text-nexa-text-secondary border border-nexa-border text-[10px] font-bold">
+                    {scr.shotCount || segs.length} Visual Cuts
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-nexa-bg-base text-nexa-text-secondary border border-nexa-border text-[10px] font-bold">
+                    {scr.wordCount || 0} Spoken Words
+                  </span>
+                </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={biographicalField}
+                  onChange={(e) => setBiographicalField(e.target.value)}
+                  className="px-3 py-1.5 rounded-full border border-nexa-border bg-nexa-bg-base text-xs font-bold"
+                  title="Dynamic Biographical Field"
+                >
+                  <option value="auto">Field: Auto-Detect</option>
+                  <option value="Technology & Innovation">Technology &amp; Innovation</option>
+                  <option value="Business & Founders">Business &amp; Founders</option>
+                  <option value="Science & Medicine">Science &amp; Medicine</option>
+                  <option value="Politics, Law & Governance">Politics, Law &amp; Governance</option>
+                  <option value="Sports & Competition">Sports &amp; Competition</option>
+                  <option value="Arts, Film & Music">Arts, Film &amp; Music</option>
+                  <option value="Humanitarian & Civic Impact">Humanitarian &amp; Civic Impact</option>
+                </select>
+                <select
+                  value={narrativeStyle}
+                  onChange={(e) => setNarrativeStyle(e.target.value)}
+                  className="px-3 py-1.5 rounded-full border border-nexa-border bg-nexa-bg-base text-xs font-bold"
+                  title="Documentary Narrative Style"
+                >
+                  <option value="Investigative Archival Documentary">Investigative Archival</option>
+                  <option value="Biographical Portrait (Restrained & Journalistic)">Restrained Journalistic</option>
+                  <option value="Chronological Reckoning & Public Record">Chronological Reckoning</option>
+                </select>
                 <select
                   value={durationMinutes}
                   onChange={(e) => setDurationMinutes(Number(e.target.value))}
@@ -596,7 +646,7 @@ export const ProductionStudioPage: React.FC = () => {
                   disabled={busy}
                   className="px-3.5 py-1.5 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-bold cursor-pointer"
                 >
-                  Regenerate Full Script
+                  {busy ? 'Writing Chapters...' : 'Regenerate Full Script'}
                 </button>
                 <button
                   onClick={handleSaveScript}
@@ -615,32 +665,115 @@ export const ProductionStudioPage: React.FC = () => {
               </div>
             </div>
 
-            <textarea
-              value={scriptText}
-              onChange={(e) => setScriptText(e.target.value)}
-              rows={18}
-              className="w-full p-4 rounded-2xl border border-nexa-border bg-nexa-bg-base text-sm leading-relaxed text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
-            />
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div className="inline-flex items-center p-1 rounded-full bg-nexa-bg-base border border-nexa-border">
+                <button
+                  type="button"
+                  onClick={() => setScriptViewMode('realigned')}
+                  className={`px-3.5 py-1 rounded-full text-xs font-extrabold cursor-pointer transition ${
+                    scriptViewMode === 'realigned'
+                      ? 'bg-nexa-brand text-white'
+                      : 'text-nexa-text-secondary hover:text-nexa-text-primary'
+                  }`}
+                >
+                  Realigned Shot-by-Shot View ({(scr.sections || []).length} Chapters)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScriptViewMode('raw')}
+                  className={`px-3.5 py-1 rounded-full text-xs font-extrabold cursor-pointer transition ${
+                    scriptViewMode === 'raw'
+                      ? 'bg-nexa-brand text-white'
+                      : 'text-nexa-text-secondary hover:text-nexa-text-primary'
+                  }`}
+                >
+                  Raw Master Script Editor
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => copyPrompt(scriptText, 'FULL_SCRIPT')}
+                className="px-3 py-1.5 rounded-full border border-nexa-border hover:border-nexa-brand text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+              >
+                <Copy className="w-3 h-3" /> {copiedId === 'FULL_SCRIPT' ? 'Copied Full Script!' : 'Copy Realigned Script'}
+              </button>
+            </div>
+
+            {scriptViewMode === 'realigned' && (scr.sections || []).length > 0 ? (
+              <div className="space-y-5 max-h-[680px] overflow-y-auto pr-1">
+                {(scr.sections || []).map((sec: any, sIdx: number) => (
+                  <div key={sIdx} className="rounded-2xl border border-nexa-border bg-nexa-bg-base p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-nexa-border pb-2.5">
+                      <h3 className="text-sm font-black text-display text-nexa-text-primary">
+                        {sec.title} {sec.timeRange ? `(${sec.timeRange})` : ''}
+                      </h3>
+                      <span className="text-[11px] font-extrabold text-nexa-brand">
+                        {(sec.shots || []).length} cuts • ≤7s/cut
+                      </span>
+                    </div>
+                    <div className="space-y-2.5">
+                      {(sec.shots || []).map((sh: any, shIdx: number) => (
+                        <div
+                          key={shIdx}
+                          className="p-3 rounded-xl bg-nexa-bg-surface border border-nexa-border space-y-1.5"
+                        >
+                          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                            <span className="px-2 py-0.5 rounded-md bg-nexa-brand/15 text-nexa-brand font-extrabold font-mono">
+                              [{sh.timestamp}]
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-500 font-extrabold">
+                              VISUAL
+                            </span>
+                            <span className="text-nexa-text-muted font-semibold ml-auto">
+                              {sh.durationSeconds}s
+                            </span>
+                          </div>
+                          <p className="text-xs text-nexa-text-secondary leading-relaxed">
+                            {sh.visual}
+                          </p>
+                          {sh.narration ? (
+                            <p className="text-xs text-nexa-text-primary font-medium leading-relaxed">
+                              <strong className="text-nexa-brand">NARRATOR (V.O.):</strong> {sh.narration}
+                            </p>
+                          ) : (
+                            <p className="text-xs italic text-nexa-text-muted">
+                              (Audio: {sh.audioCue || 'Silence'})
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <textarea
+                value={scriptText}
+                onChange={(e) => setScriptText(e.target.value)}
+                rows={22}
+                className="w-full p-4 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs font-mono leading-relaxed text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+              />
+            )}
 
             <div className="space-y-2 pt-2">
               <div className="text-xs font-extrabold text-nexa-text-primary">
-                Paragraph-Level Source Regeneration
+                Shot &amp; Block-Level Source Refinement
               </div>
-              <div className="space-y-2 max-h-64 overflow-y-auto">
-                {scriptText.split('\n\n').map((para, idx) => (
+              <div className="space-y-2 max-h-56 overflow-y-auto">
+                {scriptText.split('\n\n').slice(0, 40).map((para, idx) => (
                   <div
                     key={idx}
-                    className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border flex items-start justify-between gap-3"
+                    className="p-3 rounded-2xl bg-nexa-bg-base border border-nexa-border flex items-start justify-between gap-3"
                   >
                     <p className="text-xs text-nexa-text-secondary line-clamp-2 flex-1">
-                      <strong>¶{idx + 1}:</strong> {para}
+                      <strong>#{idx + 1}:</strong> {para}
                     </p>
                     <button
                       onClick={() => handleRegenerateParagraph(idx)}
                       disabled={busy}
                       className="px-3 py-1 rounded-full border border-nexa-border bg-nexa-bg-surface hover:border-nexa-brand text-[11px] font-bold shrink-0 cursor-pointer"
                     >
-                      Regenerate ¶{idx + 1}
+                      Refine #{idx + 1}
                     </button>
                   </div>
                 ))}
@@ -723,10 +856,10 @@ export const ProductionStudioPage: React.FC = () => {
           <div className="nexa-card rounded-3xl p-6 flex flex-wrap items-center justify-between gap-4">
             <div>
               <h2 className="text-base font-black text-display text-nexa-text-primary">
-                5–10 Second Visual Timeline & Google Flow Prompt Matrix ({segs.length} Continuous Beats)
+                ≤7 Second Visual Timeline &amp; Google Flow Prompt Matrix ({segs.length} Continuous Cuts)
               </h2>
               <p className="text-xs text-nexa-text-secondary">
-                Every 5–10 second narration beat is paired with an age-locked Character Reference, Location Reference, and copyable Google Flow 16:9 prompt.
+                Every ≤7-second narration beat is paired with a domain-matched Character Reference, Location Reference, and copyable Google Flow 16:9 prompt.
               </p>
             </div>
             <div className="flex gap-2.5">
@@ -938,7 +1071,7 @@ export const ProductionStudioPage: React.FC = () => {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-base font-black text-display text-nexa-text-primary">Aligned SRT Subtitle Tracks</h2>
-              <p className="text-xs text-nexa-text-secondary">Time-aligned with the 5–10 second visual segments.</p>
+              <p className="text-xs text-nexa-text-secondary">Time-aligned with the ≤7 second visual cuts.</p>
             </div>
             {subs[0] && (
               <a

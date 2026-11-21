@@ -295,14 +295,31 @@ func BuildProductionPackageZip(
 	if docxBytes, err := os.ReadFile(docxTempPath); err == nil {
 		_ = writeZipEntry(zw, "documentary-script.docx", docxBytes)
 	}
-	_ = writeZipEntry(zw, "narration.txt", []byte(fullNarration))
+	_ = writeZipEntry(zw, "realigned-script.md", []byte(fullNarration))
+
+	// Extract clean spoken monologue for narration.txt if the script includes VISUAL shot cues
+	var spokenLines []string
+	for _, rawLine := range strings.Split(fullNarration, "\n") {
+		trimmed := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(trimmed, "NARRATOR (V.O.):") {
+			txt := strings.TrimSpace(strings.TrimPrefix(trimmed, "NARRATOR (V.O.):"))
+			if txt != "" {
+				spokenLines = append(spokenLines, txt)
+			}
+		}
+	}
+	narrationTxt := fullNarration
+	if len(spokenLines) > 0 {
+		narrationTxt = strings.Join(spokenLines, "\n\n")
+	}
+	_ = writeZipEntry(zw, "narration.txt", []byte(narrationTxt))
 
 	if csvBytes, err := GenerateVisualTimelineCSV(segments); err == nil {
 		_ = writeZipEntry(zw, "visual-timeline.csv", csvBytes)
 	}
 
 	var promptsBuf strings.Builder
-	promptsBuf.WriteString(fmt.Sprintf("# GOOGLE FLOW IMAGE PROMPTS — %s\n# Interval: 5-10 seconds per visual beat\n\n", projectTitle))
+	promptsBuf.WriteString(fmt.Sprintf("# GOOGLE FLOW IMAGE PROMPTS — %s\n# Pacing: <= 7 seconds per visual cut\n\n", projectTitle))
 	for _, s := range segments {
 		promptsBuf.WriteString(fmt.Sprintf("[%s | %s -> %s (%.1fs)]\nCHARACTER: %s | LOCATION: %s\nNARRATION: %s\nPROMPT: %s\n\n",
 			s.Code, FormatSRTTime(s.StartSeconds), FormatSRTTime(s.EndSeconds), s.Duration,

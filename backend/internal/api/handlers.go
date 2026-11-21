@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,9 +17,23 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"trendscout-backend/internal/agents"
+	"trendscout-backend/internal/ai"
 	"trendscout-backend/internal/db"
 	"trendscout-backend/internal/services"
 )
+
+type authContextKey string
+
+const ctxAuthUserKey authContextKey = "authUser"
+
+type AuthClaimsInfo struct {
+	UserID    string
+	Email     string
+	Name      string
+	Role      string
+	ExpiresAt time.Time
+	IssuedAt  time.Time
+}
 
 func jwtSecret() []byte {
 	sec := os.Getenv("JWT_SECRET")
@@ -27,28 +43,141 @@ func jwtSecret() []byte {
 	return []byte(sec)
 }
 
-func IssueTokens(userID, email, name, role string) (string, string, error) {
+func accessTokenTTL() time.Duration {
+	if mins, err := strconv.Atoi(strings.TrimSpace(os.Getenv("JWT_ACCESS_TTL_MINUTES"))); err == nil && mins > 0 {
+		return time.Duration(mins) * time.Minute
+	}
+	return 2 * time.Hour
+}
+
+func refreshTokenTTL(rememberMe bool) time.Duration {
+	if !rememberMe {
+		return 24 * time.Hour
+	}
+	if hrs, err := strconv.Atoi(strings.TrimSpace(os.Getenv("JWT_REFRESH_TTL_HOURS"))); err == nil && hrs > 0 {
+		return time.Duration(hrs) * time.Hour
+	}
+	return 7 * 24 * time.Hour
+}
+
+func IssueTokensWithTTL(userID, email, name, role string, rememberMe bool) (string, string, time.Time, time.Time, error) {
+	now := time.Now().UTC()
+	accessExp := now.Add(accessTokenTTL())
+	refreshExp := now.Add(refreshTokenTTL(rememberMe))
+
 	accessClaims := jwt.MapClaims{
 		"sub":   userID,
 		"email": email,
 		"name":  name,
 		"role":  role,
-		"exp":   time.Now().Add(24 * time.Hour).Unix(),
+		"type":  "access",
+		"iat":   now.Unix(),
+		"exp":   accessExp.Unix(),
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	access, err := t.SignedString(jwtSecret())
 	if err != nil {
-		return "", "", err
+		return "", "", time.Time{}, time.Time{}, err
 	}
 
 	refreshClaims := jwt.MapClaims{
-		"sub":  userID,
-		"type": "refresh",
-		"exp":  time.Now().Add(14 * 24 * time.Hour).Unix(),
+		"sub":        userID,
+		"type":       "refresh",
+		"rememberMe": rememberMe,
+		"iat":        now.Unix(),
+		"exp":        refreshExp.Unix(),
 	}
 	rt := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
 	refresh, err := rt.SignedString(jwtSecret())
-	return access, refresh, err
+	return access, refresh, accessExp, refreshExp, err
+}
+
+func IssueTokens(userID, email, name, role string) (string, string, error) {
+	a, r, _, _, err := IssueTokensWithTTL(userID, email, name, role, true)
+	return a, r, err
+}
+
+func parseAndValidateJWT(tokenStr string, expectedType string) (jwt.MapClaims, string, error) {
+	tokenStr = strings.TrimSpace(tokenStr)
+	if tokenStr == "" {
+		return nil, "AUTH_REQUIRED", errors.New("authentication required")
+	}
+	parsed, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return jwtSecret(), nil
+	})
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, "TOKEN_EXPIRED", errors.New("session expired, please sign in again")
+		}
+		return nil, "INVALID_TOKEN", errors.New("invalid session token")
+	}
+	if !parsed.Valid {
+		return nil, "INVALID_TOKEN", errors.New("invalid session token")
+	}
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, "INVALID_TOKEN", errors.New("invalid token claims")
+	}
+	if expectedType != "" {
+		tokType, _ := claims["type"].(string)
+		// Allow legacy access tokens without explicit "type" only when expecting access, never allow refresh as access
+		if expectedType == "refresh" && tokType != "refresh" {
+			return nil, "INVALID_TOKEN", errors.New("invalid refresh token type")
+		}
+		if expectedType == "access" && tokType == "refresh" {
+			return nil, "INVALID_TOKEN", errors.New("refresh token cannot be used for API access")
+		}
+	}
+	return claims, "", nil
+}
+
+func extractBearerToken(r *http.Request) string {
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		return strings.TrimSpace(authHeader[7:])
+	}
+	if qTok := strings.TrimSpace(r.URL.Query().Get("token")); qTok != "" {
+		return qTok
+	}
+	return ""
+}
+
+func requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tokenStr := extractBearerToken(r)
+		claims, code, err := parseAndValidateJWT(tokenStr, "access")
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"error": err.Error(),
+				"code":  code,
+			})
+			return
+		}
+		sub, _ := claims["sub"].(string)
+		email, _ := claims["email"].(string)
+		name, _ := claims["name"].(string)
+		role, _ := claims["role"].(string)
+		var expTime, iatTime time.Time
+		if expVal, ok := claims["exp"].(float64); ok {
+			expTime = time.Unix(int64(expVal), 0).UTC()
+		}
+		if iatVal, ok := claims["iat"].(float64); ok {
+			iatTime = time.Unix(int64(iatVal), 0).UTC()
+		}
+		info := AuthClaimsInfo{
+			UserID:    sub,
+			Email:     email,
+			Name:      name,
+			Role:      role,
+			ExpiresAt: expTime,
+			IssuedAt:  iatTime,
+		}
+		ctx := context.WithValue(r.Context(), ctxAuthUserKey, info)
+		next(w, r.WithContext(ctx))
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -72,15 +201,16 @@ func RegisterRoutes(mux *http.ServeMux) {
 		})
 	})
 
-	// 1. AUTHENTICATION
+	// 1. AUTHENTICATION (Login, JWT Refresh, Logout, Authenticated Session Check)
 	mux.HandleFunc("/api/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
 			return
 		}
 		var req struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
+			Email      string `json:"email"`
+			Password   string `json:"password"`
+			RememberMe *bool  `json:"rememberMe"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "invalid payload"})
@@ -91,17 +221,28 @@ func RegisterRoutes(mux *http.ServeMux) {
 			SELECT id, email, password_hash, name, role FROM users WHERE LOWER(email) = LOWER($1)
 		`, strings.TrimSpace(req.Email)).Scan(&id, &email, &hash, &name, &role)
 		if err != nil {
-			writeJSON(w, 401, map[string]string{"error": "invalid credentials"})
+			writeJSON(w, 401, map[string]string{"error": "Invalid email or password", "code": "INVALID_CREDENTIALS"})
 			return
 		}
 		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil {
-			writeJSON(w, 401, map[string]string{"error": "invalid credentials"})
+			writeJSON(w, 401, map[string]string{"error": "Invalid email or password", "code": "INVALID_CREDENTIALS"})
 			return
 		}
-		tok, refTok, _ := IssueTokens(id, email, name, role)
+		remember := true
+		if req.RememberMe != nil {
+			remember = *req.RememberMe
+		}
+		tok, refTok, accessExp, refreshExp, err := IssueTokensWithTTL(id, email, name, role, remember)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "failed to issue session tokens"})
+			return
+		}
 		writeJSON(w, 200, map[string]any{
-			"token":        tok,
-			"refreshToken": refTok,
+			"token":            tok,
+			"refreshToken":     refTok,
+			"expiresAt":        accessExp.Format(time.RFC3339),
+			"expiresIn":        int64(time.Until(accessExp).Seconds()),
+			"refreshExpiresAt": refreshExp.Format(time.RFC3339),
 			"user": map[string]string{
 				"id":    id,
 				"email": email,
@@ -112,30 +253,48 @@ func RegisterRoutes(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("/api/auth/refresh", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+			return
+		}
 		var req struct {
 			RefreshToken string `json:"refreshToken"`
 		}
-		_ = readJSON(r, &req)
-		parsed, err := jwt.Parse(req.RefreshToken, func(t *jwt.Token) (any, error) {
-			return jwtSecret(), nil
-		})
-		if err != nil || !parsed.Valid {
-			writeJSON(w, 401, map[string]string{"error": "expired or invalid refresh token"})
+		if err := readJSON(r, &req); err != nil || strings.TrimSpace(req.RefreshToken) == "" {
+			writeJSON(w, 401, map[string]string{"error": "refresh token required", "code": "REFRESH_REQUIRED"})
 			return
 		}
-		claims, _ := parsed.Claims.(jwt.MapClaims)
+		claims, code, err := parseAndValidateJWT(req.RefreshToken, "refresh")
+		if err != nil {
+			if code == "TOKEN_EXPIRED" {
+				code = "REFRESH_EXPIRED"
+			}
+			writeJSON(w, 401, map[string]string{"error": "Session expired. Please sign in again.", "code": code})
+			return
+		}
 		userID, _ := claims["sub"].(string)
+		remember, okRem := claims["rememberMe"].(bool)
+		if !okRem {
+			remember = true
+		}
 		var email, name, role string
 		err = db.DB.QueryRowContext(r.Context(), `SELECT email, name, role FROM users WHERE id = $1`, userID).Scan(&email, &name, &role)
 		if err != nil {
-			writeJSON(w, 401, map[string]string{"error": "user not found"})
+			writeJSON(w, 401, map[string]string{"error": "user not found", "code": "USER_NOT_FOUND"})
 			return
 		}
-		tok, refTok, _ := IssueTokens(userID, email, name, role)
+		tok, refTok, accessExp, refreshExp, err := IssueTokensWithTTL(userID, email, name, role, remember)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "failed to refresh session"})
+			return
+		}
 		writeJSON(w, 200, map[string]any{
-			"token":        tok,
-			"refreshToken": refTok,
-			"user":         map[string]string{"id": userID, "email": email, "name": name, "role": role},
+			"token":            tok,
+			"refreshToken":     refTok,
+			"expiresAt":        accessExp.Format(time.RFC3339),
+			"expiresIn":        int64(time.Until(accessExp).Seconds()),
+			"refreshExpiresAt": refreshExp.Format(time.RFC3339),
+			"user":             map[string]string{"id": userID, "email": email, "name": name, "role": role},
 		})
 	})
 
@@ -143,16 +302,26 @@ func RegisterRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
 
-	mux.HandleFunc("/api/auth/me", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/auth/me", requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		authInfo, _ := r.Context().Value(ctxAuthUserKey).(AuthClaimsInfo)
 		var id, email, name, role string
-		_ = db.DB.QueryRowContext(r.Context(), `SELECT id, email, name, role FROM users ORDER BY created_at ASC LIMIT 1`).Scan(&id, &email, &name, &role)
+		err := db.DB.QueryRowContext(r.Context(), `SELECT id, email, name, role FROM users WHERE id = $1`, authInfo.UserID).Scan(&id, &email, &name, &role)
+		if err != nil {
+			writeJSON(w, 401, map[string]string{"error": "user not found", "code": "USER_NOT_FOUND"})
+			return
+		}
 		writeJSON(w, 200, map[string]any{
 			"user": map[string]string{"id": id, "email": email, "name": name, "role": role},
+			"session": map[string]any{
+				"expiresAt":        authInfo.ExpiresAt.Format(time.RFC3339),
+				"expiresInSeconds": int64(time.Until(authInfo.ExpiresAt).Seconds()),
+				"issuedAt":         authInfo.IssuedAt.Format(time.RFC3339),
+			},
 		})
-	})
+	}))
 
-	// 2. DASHBOARD OVERVIEW & EXTENSION SUMMARY
-	mux.HandleFunc("/api/dashboard/overview", func(w http.ResponseWriter, r *http.Request) {
+	// 2. DASHBOARD OVERVIEW & EXTENSION SUMMARY (JWT Protected)
+	mux.HandleFunc("/api/dashboard/overview", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		countQuery := func(q string) int {
 			var c int
@@ -162,12 +331,13 @@ func RegisterRoutes(mux *http.ServeMux) {
 
 		metrics := map[string]any{
 			"totalPeople":             countQuery(`SELECT COUNT(*) FROM people`),
-			"newDiscoveries":          countQuery(`SELECT COUNT(*) FROM discoveries`),
-			"emergingStories":         countQuery(`SELECT COUNT(*) FROM discoveries WHERE trend_stage IN ('Early Whisper', 'Emerging')`),
-			"acceleratingStories":     countQuery(`SELECT COUNT(*) FROM discoveries WHERE trend_stage = 'Accelerating'`),
-			"majorViralOpportunities": countQuery(`SELECT COUNT(*) FROM discoveries WHERE trend_stage = 'Major Viral Opportunity'`),
+			"newDiscoveries":          countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active'`),
+			"archivedDiscoveries":     countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'archived'`),
+			"emergingStories":         countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active' AND trend_stage IN ('Early Whisper', 'Emerging')`),
+			"acceleratingStories":     countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active' AND trend_stage = 'Accelerating'`),
+			"majorViralOpportunities": countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active' AND trend_stage = 'Major Viral Opportunity'`),
 			"strongUnderdogs":         countQuery(`SELECT COUNT(*) FROM people WHERE underdog_classification IN ('Strong underdog', 'Comeback story', 'Unexpected champion')`),
-			"storiesAwaitingResearch": countQuery(`SELECT COUNT(*) FROM discoveries WHERE research_status = 'pending'`),
+			"storiesAwaitingResearch": countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active' AND research_status = 'pending'`),
 			"scriptsGenerated":        countQuery(`SELECT COUNT(*) FROM documentary_scripts`),
 			"projectsInProduction":    countQuery(`SELECT COUNT(*) FROM documentary_projects WHERE status != 'completed'`),
 			"completedPackages":       countQuery(`SELECT COUNT(*) FROM production_exports WHERE export_type = 'package_zip'`),
@@ -215,7 +385,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 			nRows.Close()
 		}
 
-		topDiscoveries := queryDiscoveriesList(ctx, "", "", 0)
+		topDiscoveries := queryDiscoveriesList(ctx, "", "", 0, "active")
 
 		writeJSON(w, 200, map[string]any{
 			"metrics": metrics,
@@ -228,18 +398,18 @@ func RegisterRoutes(mux *http.ServeMux) {
 			"recentNotifications": notifs,
 			"topDiscoveries":      topDiscoveries,
 		})
-	})
+	}))
 
-	mux.HandleFunc("/api/extension/summary", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/extension/summary", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		var lastScan string
 		_ = db.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(last_scan_at)::text, NOW()::text) FROM connected_sources`).Scan(&lastScan)
 
 		var totalDisc, urgentAlerts int
-		_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM discoveries`).Scan(&totalDisc)
+		_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM discoveries WHERE status = 'active'`).Scan(&totalDisc)
 		_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE is_read = FALSE`).Scan(&urgentAlerts)
 
-		discoveries := queryDiscoveriesList(ctx, "", "", 0)
+		discoveries := queryDiscoveriesList(ctx, "", "", 0, "active")
 		if len(discoveries) > 5 {
 			discoveries = discoveries[:5]
 		}
@@ -271,15 +441,28 @@ func RegisterRoutes(mux *http.ServeMux) {
 			"latestDiscoveries":   discoveries,
 			"unreadNotifications": unread,
 		})
-	})
+	}))
 
 	// 3. DISCOVERIES & OPPORTUNITIES
-	mux.HandleFunc("/api/discoveries", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/discoveries", requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		stage := r.URL.Query().Get("stage")
 		search := r.URL.Query().Get("search")
-		items := queryDiscoveriesList(r.Context(), stage, search, 0)
-		writeJSON(w, 200, map[string]any{"discoveries": items})
-	})
+		status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+		if status == "" {
+			status = "active"
+		}
+		items := queryDiscoveriesList(ctx, stage, search, 0, status)
+		var activeCount, archivedCount int
+		_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM discoveries WHERE status = 'active'`).Scan(&activeCount)
+		_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM discoveries WHERE status = 'archived'`).Scan(&archivedCount)
+		writeJSON(w, 200, map[string]any{
+			"discoveries":   items,
+			"status":        status,
+			"activeCount":   activeCount,
+			"archivedCount": archivedCount,
+		})
+	}))
 
 	runLiveScanHandler := func(w http.ResponseWriter, r *http.Request, trigger string) {
 		var req struct {
@@ -332,13 +515,13 @@ func RegisterRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, summary)
 	}
 
-	mux.HandleFunc("/api/discoveries/scan", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/discoveries/scan", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
 			return
 		}
 		runLiveScanHandler(w, r, "manual")
-	})
+	}))
 
 	// Vercel Cron & Scheduled Live Discovery Endpoint (supports GET for Vercel Cron and POST)
 	mux.HandleFunc("/api/cron/discovery", func(w http.ResponseWriter, r *http.Request) {
@@ -356,7 +539,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 		runLiveScanHandler(w, r, "vercel_cron")
 	})
 
-	mux.HandleFunc("/api/discoveries/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/discoveries/", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/discoveries/")
 		parts := strings.Split(strings.Trim(path, "/"), "/")
 		if len(parts) == 0 || parts[0] == "" {
@@ -375,16 +558,40 @@ func RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 
+		if len(parts) == 2 && parts[1] == "archive" && r.Method == http.MethodPost {
+			_, err := db.DB.ExecContext(r.Context(), `
+				UPDATE discoveries SET status = 'archived', updated_at = NOW() WHERE id = $1
+			`, discID)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"ok": true, "id": discID, "status": "archived"})
+			return
+		}
+
+		if len(parts) == 2 && parts[1] == "restore" && r.Method == http.MethodPost {
+			_, err := db.DB.ExecContext(r.Context(), `
+				UPDATE discoveries SET status = 'active', updated_at = NOW() WHERE id = $1
+			`, discID)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"ok": true, "id": discID, "status": "active"})
+			return
+		}
+
 		detail, err := getDiscoveryDetail(r.Context(), discID)
 		if err != nil {
 			writeJSON(w, 404, map[string]string{"error": err.Error()})
 			return
 		}
 		writeJSON(w, 200, detail)
-	})
+	}))
 
 	// 4. WATCHLIST
-	mux.HandleFunc("/api/watchlist", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/watchlist", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		if r.Method == http.MethodGet {
 			rows, _ := db.DB.QueryContext(ctx, `
@@ -446,18 +653,18 @@ func RegisterRoutes(mux *http.ServeMux) {
 			writeJSON(w, 200, map[string]any{"ok": true, "id": wlID})
 			return
 		}
-	})
+	}))
 
-	mux.HandleFunc("/api/watchlist/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/watchlist/", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
 			id := strings.TrimPrefix(r.URL.Path, "/api/watchlist/")
 			_, _ = db.DB.ExecContext(r.Context(), `DELETE FROM watchlists WHERE id = $1 OR discovery_id = $1`, id)
 			writeJSON(w, 200, map[string]any{"ok": true})
 		}
-	})
+	}))
 
 	// 5. RESEARCH WORKSPACE & LIBRARY
-	mux.HandleFunc("/api/research/library", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/research/library", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		sRows, _ := db.DB.QueryContext(ctx, `
 			SELECT rs.id, rs.person_id, p.canonical_name, rs.url, rs.title, rs.publisher, COALESCE(rs.published_at, ''), rs.source_type, rs.reliability_score, COALESCE(rs.raw_excerpt, '')
@@ -507,9 +714,9 @@ func RegisterRoutes(mux *http.ServeMux) {
 			"sources": sources,
 			"claims":  claims,
 		})
-	})
+	}))
 
-	mux.HandleFunc("/api/research/person/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/research/person/", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/research/person/")
 		parts := strings.Split(strings.Trim(path, "/"), "/")
 		personID := parts[0]
@@ -530,9 +737,9 @@ func RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, 200, dossier)
-	})
+	}))
 
-	mux.HandleFunc("/api/research/claims/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/research/claims/", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodPut {
 			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
 			return
@@ -552,10 +759,10 @@ func RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, 200, map[string]any{"ok": true})
-	})
+	}))
 
 	// 6. DOCUMENTARY PROJECTS & PRODUCTION STUDIO
-	mux.HandleFunc("/api/projects", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/projects", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		if r.Method == http.MethodGet {
 			rows, _ := db.DB.QueryContext(ctx, `
@@ -608,9 +815,9 @@ func RegisterRoutes(mux *http.ServeMux) {
 			}
 			writeJSON(w, 400, map[string]string{"error": "discoveryId required"})
 		}
-	})
+	}))
 
-	mux.HandleFunc("/api/projects/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/projects/", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		path := strings.TrimPrefix(r.URL.Path, "/api/projects/")
 		parts := strings.Split(strings.Trim(path, "/"), "/")
@@ -637,20 +844,26 @@ func RegisterRoutes(mux *http.ServeMux) {
 			var req struct {
 				TargetDurationMinutes int    `json:"targetDurationMinutes"`
 				Style                 string `json:"style"`
+				BiographicalField     string `json:"biographicalField"`
 			}
 			_ = readJSON(r, &req)
 			if req.TargetDurationMinutes == 0 {
 				req.TargetDurationMinutes = 20
 			}
 			if req.Style == "" {
-				req.Style = "Cinematic Investigative Storytelling"
+				req.Style = "Investigative Archival Documentary"
 			}
-			scrID, err := agents.GenerateDocumentaryScript(ctx, projectID, req.TargetDurationMinutes, req.Style)
+			if req.BiographicalField == "" {
+				req.BiographicalField = "auto"
+			}
+			scrID, err := agents.GenerateDocumentaryScriptWithOptions(ctx, projectID, req.TargetDurationMinutes, req.Style, req.BiographicalField)
 			if err != nil {
 				writeJSON(w, 500, map[string]string{"error": err.Error()})
 				return
 			}
-			writeJSON(w, 200, map[string]any{"ok": true, "scriptId": scrID})
+			// Keep <=7s Visual Timeline automatically synchronized with the newly generated realigned script
+			segCount, _ := agents.GenerateVisualTimeline(ctx, projectID)
+			writeJSON(w, 200, map[string]any{"ok": true, "scriptId": scrID, "segmentCount": segCount})
 
 		case "script":
 			if r.Method == http.MethodPut {
@@ -659,7 +872,8 @@ func RegisterRoutes(mux *http.ServeMux) {
 					ChangeSummary     string `json:"changeSummary"`
 				}
 				_ = readJSON(r, &req)
-				words := len(strings.Fields(req.FullNarrationText))
+				spoken := agents.ExtractSpokenNarration(req.FullNarrationText)
+				words := len(strings.Fields(spoken))
 				estSec := int(float64(words) / 145.0 * 60.0)
 				if estSec < 60 {
 					estSec = 1200
@@ -698,20 +912,29 @@ func RegisterRoutes(mux *http.ServeMux) {
 				writeJSON(w, 404, map[string]string{"error": "script not found"})
 				return
 			}
-			paras := strings.Split(fullText, "\n\n")
-			if req.ParagraphIndex >= 0 && req.ParagraphIndex < len(paras) {
-				paras[req.ParagraphIndex] = paras[req.ParagraphIndex] + " Every archival record from that season confirms the emotional and physical toll required to break through when nobody outside the inner circle believed victory was possible."
-			}
-			updatedText := strings.Join(paras, "\n\n")
+			var personName, category, bio, summary string
+			_ = db.DB.QueryRowContext(ctx, `
+				SELECT p.canonical_name, COALESCE(p.category, ''), COALESCE(p.biography, ''), COALESCE(p.summary, '')
+				FROM documentary_projects dp
+				JOIN people p ON p.id = dp.person_id
+				WHERE dp.id = $1
+			`, projectID).Scan(&personName, &category, &bio, &summary)
+
+			updatedText := agents.RegenerateScriptBlock(
+				personName, category, bio, summary, fullText, req.ParagraphIndex, req.Tone,
+				func(pName, field, existingBlock, biography, tone string) (string, string, error) {
+					return ai.RegenerateShotWithGemini(ctx, pName, field, existingBlock, biography, tone)
+				},
+			)
 			ver++
-			words := len(strings.Fields(updatedText))
+			words := len(strings.Fields(agents.ExtractSpokenNarration(updatedText)))
 			_, _ = db.DB.ExecContext(ctx, `
 				UPDATE documentary_scripts SET current_version = $2, full_narration_text = $3, word_count = $4, updated_at = NOW() WHERE id = $1
 			`, scriptID, ver, updatedText, words)
 			_, _ = db.DB.ExecContext(ctx, `
 				INSERT INTO script_versions (id, script_id, version_number, sections_json, full_narration_text, word_count, estimated_duration_seconds, change_summary, created_by)
 				VALUES ($1, $2, $3, '[]', $4, $5, 1200, $6, 'DocumentaryWriterAgent')
-			`, "sver-"+uuid.NewString()[:8], scriptID, ver, updatedText, words, fmt.Sprintf("Regenerated paragraph #%d with deeper source emphasis", req.ParagraphIndex+1))
+			`, "sver-"+uuid.NewString()[:8], scriptID, ver, updatedText, words, fmt.Sprintf("Refined shot/block #%d (<=7s investigative cadence)", req.ParagraphIndex+1))
 			writeJSON(w, 200, map[string]any{"ok": true, "version": ver, "fullNarrationText": updatedText})
 
 		case "script/approve":
@@ -814,10 +1037,10 @@ func RegisterRoutes(mux *http.ServeMux) {
 			}
 			writeJSON(w, 404, map[string]string{"error": "unknown project action: " + action})
 		}
-	})
+	}))
 
 	// 7. NOTIFICATIONS, REPORTS, SETTINGS & SYSTEM HEALTH
-	mux.HandleFunc("/api/notifications", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/notifications", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		rows, _ := db.DB.QueryContext(r.Context(), `
 			SELECT id, COALESCE(discovery_id, ''), COALESCE(project_id, ''), type, severity, title, message, action_url, is_read, COALESCE(emailed_at::text, ''), created_at::text
 			FROM notifications ORDER BY created_at DESC LIMIT 50
@@ -837,23 +1060,23 @@ func RegisterRoutes(mux *http.ServeMux) {
 			rows.Close()
 		}
 		writeJSON(w, 200, map[string]any{"notifications": list})
-	})
+	}))
 
-	mux.HandleFunc("/api/notifications/read-all", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/notifications/read-all", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = db.DB.ExecContext(r.Context(), `UPDATE notifications SET is_read = TRUE`)
 		writeJSON(w, 200, map[string]any{"ok": true})
-	})
+	}))
 
-	mux.HandleFunc("/api/notifications/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/notifications/", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/notifications/")
 		id := strings.Split(path, "/")[0]
 		_, _ = db.DB.ExecContext(r.Context(), `UPDATE notifications SET is_read = TRUE WHERE id = $1`, id)
 		writeJSON(w, 200, map[string]any{"ok": true})
-	})
+	}))
 
-	mux.HandleFunc("/api/reports", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/reports", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		all := queryDiscoveriesList(ctx, "", "", 0)
+		all := queryDiscoveriesList(ctx, "", "", 0, "active")
 		top10 := all
 		if len(top10) > 10 {
 			top10 = top10[:10]
@@ -863,15 +1086,15 @@ func RegisterRoutes(mux *http.ServeMux) {
 			"dailyDigest": map[string]any{
 				"title":           fmt.Sprintf("TrendScout Daily Intelligence Digest — %s", time.Now().Format("Jan 2, 2006")),
 				"totalMonitored":  len(all),
-				"emergingCount":   len(queryDiscoveriesList(ctx, "Emerging", "", 0)),
-				"viralCount":      len(queryDiscoveriesList(ctx, "Major Viral Opportunity", "", 0)),
+				"emergingCount":   len(queryDiscoveriesList(ctx, "Emerging", "", 0, "active")),
+				"viralCount":      len(queryDiscoveriesList(ctx, "Major Viral Opportunity", "", 0, "active")),
 				"highlightedList": top10,
 			},
 			"weeklyTop10": top10,
 		})
-	})
+	}))
 
-	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/settings", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		if r.Method == http.MethodGet {
 			var disc, mon, ai, notif, prod string
@@ -914,9 +1137,9 @@ func RegisterRoutes(mux *http.ServeMux) {
 			`, string(discB), string(monB), string(aiB), string(notifB), string(prodB))
 			writeJSON(w, 200, map[string]any{"ok": true})
 		}
-	})
+	}))
 
-	mux.HandleFunc("/api/system/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/system/health", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		cRows, _ := db.DB.QueryContext(ctx, `
 			SELECT id, name, platform, enabled, quota_used, quota_limit, COALESCE(last_scan_at::text, ''), status, COALESCE(error_message, '')
@@ -965,9 +1188,9 @@ func RegisterRoutes(mux *http.ServeMux) {
 			"connectors": sources,
 			"jobs":       jobs,
 		})
-	})
+	}))
 
-	mux.HandleFunc("/api/system/jobs/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/system/jobs/", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			path := strings.TrimPrefix(r.URL.Path, "/api/system/jobs/")
 			jobID := strings.Split(path, "/")[0]
@@ -976,7 +1199,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 			`, jobID)
 			writeJSON(w, 200, map[string]any{"ok": true})
 		}
-	})
+	}))
 }
 
 func queryDiscoveriesList(ctx interface {
@@ -984,12 +1207,15 @@ func queryDiscoveriesList(ctx interface {
 	Done() <-chan struct{}
 	Err() error
 	Value(key any) any
-}, stageFilter string, searchFilter string, minScore float64) []map[string]any {
+}, stageFilter string, searchFilter string, minScore float64, statusFilter string) []map[string]any {
+	if statusFilter == "" {
+		statusFilter = "active"
+	}
 	rows, err := db.DB.QueryContext(ctx, `
 		SELECT d.id, d.person_id, d.event_id, p.canonical_name, p.category, p.country,
 		       COALESCE(p.image_url, ''), p.underdog_classification,
 		       e.title, e.event_date, d.headline, d.achievement, d.source_url, d.publisher,
-		       d.first_detected_at::text, d.trend_stage, d.independent_coverage_count, d.research_status,
+		       d.first_detected_at::text, d.trend_stage, d.independent_coverage_count, d.research_status, COALESCE(d.status, 'active'),
 		       COALESCE(os.overall_score, 90.0), COALESCE(os.underdog_strength, 90.0),
 		       COALESCE(os.transformation_score, 90.0), COALESCE(os.achievement_significance, 92.0),
 		       COALESCE(os.audience_momentum, 88.0), COALESCE(os.documentary_potential, 93.0),
@@ -1011,17 +1237,20 @@ func queryDiscoveriesList(ctx interface {
 
 	out := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, pID, eID, pName, cat, country, img, uClass, eTitle, eDate, head, ach, sURL, pub, detAt, stage, rStat string
+		var id, pID, eID, pName, cat, country, img, uClass, eTitle, eDate, head, ach, sURL, pub, detAt, stage, rStat, dStatus string
 		var indCov int
 		var overall, uStr, trans, achSig, mom, docPot, timeSc, evConf, satRisk, vph, chanMult float64
 		var viewsTotal int64
 		err := rows.Scan(
 			&id, &pID, &eID, &pName, &cat, &country, &img, &uClass,
-			&eTitle, &eDate, &head, &ach, &sURL, &pub, &detAt, &stage, &indCov, &rStat,
+			&eTitle, &eDate, &head, &ach, &sURL, &pub, &detAt, &stage, &indCov, &rStat, &dStatus,
 			&overall, &uStr, &trans, &achSig, &mom, &docPot, &timeSc, &evConf, &satRisk,
 			&vph, &viewsTotal, &chanMult,
 		)
 		if err != nil {
+			continue
+		}
+		if statusFilter != "all" && !strings.EqualFold(dStatus, statusFilter) {
 			continue
 		}
 		if stageFilter != "" && !strings.EqualFold(stage, stageFilter) {
@@ -1055,6 +1284,7 @@ func queryDiscoveriesList(ctx interface {
 			"trendStage":               stage,
 			"independentCoverageCount": indCov,
 			"researchStatus":           rStat,
+			"status":                   dStatus,
 			"overallScore":             overall,
 			"underdogStrength":         uStr,
 			"transformationScore":      trans,
@@ -1078,7 +1308,7 @@ func getDiscoveryDetail(ctx interface {
 	Err() error
 	Value(key any) any
 }, discID string) (map[string]any, error) {
-	all := queryDiscoveriesList(ctx, "", "", 0)
+	all := queryDiscoveriesList(ctx, "", "", 0, "all")
 	var target map[string]any
 	for _, it := range all {
 		if it["id"] == discID || it["personId"] == discID {
@@ -1302,20 +1532,20 @@ func approveDiscoveryForDocumentary(ctx interface {
 			visual_style, aspect_ratio, image_interval_seconds, thumbnail_concept,
 			youtube_titles_json, youtube_description, music_suggestions
 		) VALUES ($1,$2,$3,$4,$5,'in_production',20,
-			'Cinematic Archival Realism (35mm Documentary Stills)', '16:9', 8,
+			'Cinematic Archival Realism (35mm Documentary Stills)', '16:9', 7,
 			$6, $7, $8,
-			'Atmospheric solo strings & low pulse percussion during early struggles, rising to full cinematic brass at breakthrough.'
+			'Restrained solo piano & subtle atmospheric room tone, opening into sparse strings during pivotal turning points and silent pauses.'
 		)
 	`, projID, personID, discID, title, slug,
-		fmt.Sprintf("Split-frame high-contrast portrait of %s during early struggle vs. championship breakthrough moment.", personName),
+		fmt.Sprintf("Split-frame archival portrait of %s contrasting early origin workspace with defining public reckoning.", personName),
 		string(ytTitles),
-		fmt.Sprintf("Full 20-minute source-grounded documentary on %s.", personName))
+		fmt.Sprintf("Full 20-minute source-grounded investigative biographical documentary on %s (<=7s visual cut pace).", personName))
 	if err != nil {
 		return "", err
 	}
 
 	bgCtx := context.Background()
-	_, _ = agents.GenerateDocumentaryScript(bgCtx, projID, 20, "Cinematic Investigative Storytelling")
+	_, _ = agents.GenerateDocumentaryScript(bgCtx, projID, 20, "Investigative Archival Documentary")
 	_, _ = agents.GenerateCharacterReferences(bgCtx, projID)
 	_, _ = agents.GenerateVisualTimeline(bgCtx, projID)
 	_, _, _ = agents.GenerateProjectAudioAndSubtitles(bgCtx, projID)
@@ -1353,17 +1583,21 @@ func getProjectWorkspace(ctx interface {
 		FROM documentary_scripts WHERE project_id = $1
 	`, projectID).Scan(&scrID, &curVer, &hook, &fullText, &words, &estSec, &scrStatus)
 
-	// Script versions
+	// Script versions (and structured sections from latest version)
 	vRows, _ := db.DB.QueryContext(ctx, `
-		SELECT id, version_number, word_count, estimated_duration_seconds, change_summary, created_by, created_at::text, full_narration_text
+		SELECT id, version_number, word_count, estimated_duration_seconds, change_summary, created_by, created_at::text, full_narration_text, COALESCE(sections_json, '[]')
 		FROM script_versions WHERE script_id = $1 ORDER BY version_number DESC
 	`, scrID)
 	var versions []map[string]any
+	var parsedSections []agents.ScriptSection
 	if vRows != nil {
 		for vRows.Next() {
-			var id, sum, by, ca, txt string
+			var id, sum, by, ca, txt, secJSON string
 			var vn, wc, es int
-			if vRows.Scan(&id, &vn, &wc, &es, &sum, &by, &ca, &txt) == nil {
+			if vRows.Scan(&id, &vn, &wc, &es, &sum, &by, &ca, &txt, &secJSON) == nil {
+				if len(parsedSections) == 0 && secJSON != "" && secJSON != "[]" {
+					_ = json.Unmarshal([]byte(secJSON), &parsedSections)
+				}
 				versions = append(versions, map[string]any{
 					"id": id, "versionNumber": vn, "wordCount": wc, "estimatedDurationSeconds": es,
 					"changeSummary": sum, "createdBy": by, "createdAt": ca, "fullNarrationText": txt,
@@ -1371,6 +1605,25 @@ func getProjectWorkspace(ctx interface {
 			}
 		}
 		vRows.Close()
+	}
+
+	shotCount := 0
+	maxShotDur := 0.0
+	biographicalField := ""
+	centralQuestion := ""
+	for _, sec := range parsedSections {
+		if biographicalField == "" && sec.DomainField != "" {
+			biographicalField = sec.DomainField
+		}
+		if centralQuestion == "" && sec.CentralQuestion != "" {
+			centralQuestion = sec.CentralQuestion
+		}
+		for _, sh := range sec.Shots {
+			shotCount++
+			if sh.DurationSeconds > maxShotDur {
+				maxShotDur = sh.DurationSeconds
+			}
+		}
 	}
 
 	// Character references
@@ -1518,6 +1771,11 @@ func getProjectWorkspace(ctx interface {
 			"wordCount":                words,
 			"estimatedDurationSeconds": estSec,
 			"status":                   scrStatus,
+			"biographicalField":        biographicalField,
+			"centralQuestion":          centralQuestion,
+			"shotCount":                shotCount,
+			"maxShotDurationSeconds":   maxShotDur,
+			"sections":                 parsedSections,
 			"versions":                 versions,
 		},
 		"research":            researchDossier,

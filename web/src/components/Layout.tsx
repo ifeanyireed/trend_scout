@@ -5,7 +5,7 @@ import {
   Bell, FileSpreadsheet, Settings, Activity, LayoutDashboard, LogOut, RefreshCw,
   ChevronLeft, ChevronRight, Search, X, Sun, Moon, ShieldCheck
 } from 'lucide-react';
-import { apiFetch, clearAuthSession } from '../api/client';
+import { apiFetch, clearAuthSession, getAuthUser, getSessionRemainingMs } from '../api/client';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Master Overview', short: 'Overview', icon: LayoutDashboard, badge: 'HUB', section: 'Intelligence & Hub' },
@@ -34,6 +34,39 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [scanning, setScanning] = useState(false);
   const [scanBanner, setScanBanner] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [isDark, setIsDark] = useState(() => localStorage.getItem('ts_theme') === 'dark');
+  const [sessionLabel, setSessionLabel] = useState('');
+  const authUser = getAuthUser();
+  const userInitials = (authUser?.name || authUser?.email || 'LP')
+    .split(/\s+/)
+    .map((p) => p[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
+
+  useEffect(() => {
+    const updateSessionLabel = () => {
+      const remMs = getSessionRemainingMs();
+      if (remMs <= 0) {
+        setSessionLabel('Refreshing...');
+        return;
+      }
+      const totalMins = Math.ceil(remMs / 60000);
+      if (totalMins >= 60) {
+        const hrs = Math.floor(totalMins / 60);
+        const mins = totalMins % 60;
+        setSessionLabel(`${hrs}h ${mins}m left`);
+      } else {
+        setSessionLabel(`${totalMins}m left`);
+      }
+    };
+    updateSessionLabel();
+    const timer = setInterval(updateSessionLabel, 30000);
+    window.addEventListener('ts-auth-updated', updateSessionLabel);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('ts-auth-updated', updateSessionLabel);
+    };
+  }, []);
 
   useEffect(() => {
     if (isDark) {
@@ -306,16 +339,20 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <div className="flex items-center justify-between p-2.5 rounded-2xl bg-nexa-bg-base/80 border border-nexa-border">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded-full bg-nexa-brand/15 border border-nexa-brand/30 text-nexa-brand font-black text-xs flex items-center justify-center shrink-0 relative">
-                  LP
+                  {userInitials}
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white dark:border-slate-900 absolute -bottom-0.5 -right-0.5" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-nexa-text-primary truncate">Lead Producer</p>
-                  <div className="flex items-center gap-1.5 mt-0.5">
+                  <p className="text-xs font-bold text-nexa-text-primary truncate">
+                    {authUser?.name || 'Lead Producer'}
+                  </p>
+                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                     <span className="text-[8px] font-extrabold px-1.5 py-0.2 rounded-full uppercase bg-nexa-brand/10 text-nexa-brand border border-nexa-brand/20">
-                      STUDIO ADMIN
+                      {(authUser?.role || 'ADMIN').toUpperCase()}
                     </span>
-                    <span className="text-[9px] text-emerald-500 font-bold">• Live</span>
+                    <span className="text-[9px] text-emerald-500 font-bold" title="Active session">
+                      • {sessionLabel || 'Active'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -331,9 +368,12 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
           <div className="flex items-center justify-between gap-2">
             <button
-              onClick={() => {
+              onClick={async () => {
+                try {
+                  await apiFetch('/api/auth/logout', { method: 'POST', body: '{}' });
+                } catch (_) {}
                 clearAuthSession();
-                navigate('/login');
+                navigate('/login', { replace: true });
               }}
               className={`flex items-center gap-3 p-2.5 rounded-full text-rose-500 hover:bg-rose-500/10 transition-all cursor-pointer ${
                 isSidebarOpen ? 'flex-1 px-3.5' : 'w-full justify-center'

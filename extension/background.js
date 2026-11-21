@@ -74,22 +74,63 @@ chrome.notifications.onClicked.addListener(async (notificationId) => {
   chrome.tabs.create({ url: `${dashBase}${targetPath}` });
 });
 
+async function refreshExtensionToken(apiBase, refreshToken) {
+  if (!refreshToken) return null;
+  try {
+    const resp = await fetch(`${apiBase}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (!resp.ok) {
+      await chrome.storage.local.remove(['authToken', 'refreshToken', 'tokenExpiresAt']);
+      return null;
+    }
+    const data = await resp.json();
+    if (data?.token) {
+      await chrome.storage.local.set({
+        authToken: data.token,
+        refreshToken: data.refreshToken || refreshToken,
+        tokenExpiresAt: data.expiresAt || '',
+      });
+      return data.token;
+    }
+  } catch (_) {}
+  return null;
+}
+
 async function pollBackendSummary() {
   try {
     const stored = await chrome.storage.local.get([
       'apiBaseUrl',
       'authToken',
+      'refreshToken',
       'notificationsEnabled',
       'seenNotificationIds',
       'notificationRoutes',
     ]);
     const apiBase = cleanBaseUrl(stored.apiBaseUrl, DEFAULT_API_BASE);
-    const headers = { 'Content-Type': 'application/json' };
-    if (stored.authToken) {
-      headers['Authorization'] = `Bearer ${stored.authToken}`;
-    }
+    let token = stored.authToken || '';
+    const buildHeaders = (tok) => {
+      const h = { 'Content-Type': 'application/json' };
+      if (tok) h['Authorization'] = `Bearer ${tok}`;
+      return h;
+    };
 
-    const resp = await fetch(`${apiBase}/api/extension/summary`, { headers });
+    let resp = await fetch(`${apiBase}/api/extension/summary`, { headers: buildHeaders(token) });
+    if (resp.status === 401 && stored.refreshToken) {
+      const refreshed = await refreshExtensionToken(apiBase, stored.refreshToken);
+      if (refreshed) {
+        token = refreshed;
+        resp = await fetch(`${apiBase}/api/extension/summary`, { headers: buildHeaders(token) });
+      }
+    }
+    if (resp.status === 401) {
+      chrome.action.setBadgeText({ text: '🔑' });
+      chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+      await chrome.storage.local.set({ connectionStatus: 'auth_required' });
+      return null;
+    }
     if (!resp.ok) {
       chrome.action.setBadgeText({ text: '!' });
       chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
