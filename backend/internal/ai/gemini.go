@@ -762,6 +762,79 @@ Return JSON:
 	return strings.TrimSpace(out.Visual), strings.TrimSpace(out.Narration), nil
 }
 
+type VideoPackagingAI struct {
+	RecommendedTitles []string `json:"recommendedTitles"`
+	VideoDescription  string   `json:"videoDescription"`
+	Tags              []string `json:"tags"`
+	Hashtags          []string `json:"hashtags"`
+}
+
+// GenerateVideoPackagingWithGemini creates a high-CTR YouTube documentary description (with chapter timestamps),
+// high-performing SEO tags (kept cleanly within YouTube's 500-char tag budget), and hashtags for an opportunity/project.
+func GenerateVideoPackagingWithGemini(
+	ctx context.Context,
+	personName string,
+	biographicalField string,
+	country string,
+	headline string,
+	achievement string,
+	biography string,
+	chapterTimestamps string,
+	targetDurationMinutes int,
+) (*VideoPackagingAI, error) {
+	if !HasGeminiKey(ctx) {
+		return nil, fmt.Errorf("gemini api key not set")
+	}
+
+	sysPrompt := `You are TrendScout Studio's YouTube Documentary Growth & SEO Strategist.
+Write high-performing, search-optimized YouTube packaging for a prestige investigative biographical documentary.
+RULES:
+1. VIDEO DESCRIPTION:
+   - Open with a sharp 2-sentence above-the-fold hook optimized for YouTube search & browse previews (include subject's full name and core turning point naturally in the first 150 characters).
+   - Follow with a concise 1-paragraph factual editorial overview grounded strictly in the provided dossier.
+   - Include a clean "Chapters:" timestamp block using the exact provided chapter timestamps (if provided).
+   - Include a brief journalistic attribution note ("Every milestone in this film is grounded in public records and attributed reporting.") and a subtle subscribe/discussion prompt.
+   - End with 3–5 primary hashtags on the final line.
+2. HIGH-PERFORMING TAGS (16–22 tags):
+   - Mix exact-match subject name, biographical field/niche keywords, high-intent documentary search phrases ("<name> documentary", "<name> true story", "<name> biography"), event/institution keywords, and broader discovery terms.
+   - Total comma-separated length of all tags MUST stay <= 480 characters (YouTube's strict 500-char tag box limit).
+   - No leading # symbols on tags, no duplicate tags.
+3. HASHTAGS (8–12 hashtags):
+   - Every hashtag MUST begin with # and contain no spaces or punctuation (CamelCase e.g. #Documentary, #TrueStory, #Biography, plus subject & domain-specific tags).
+4. RECOMMENDED TITLES (3 titles):
+   - High-CTR prestige documentary titles (55–72 characters, zero clickbait spam).`
+
+	userPrompt := fmt.Sprintf(`Subject: %s
+Biographical Field: %s
+Country / Origin: %s
+Target Duration: %d minutes
+Latest Headline: %s
+Core Breakthrough / Turning Point: %s
+Chapter Timestamps:
+%s
+
+Biographical Dossier Extract:
+%s
+
+Return strictly valid JSON matching:
+{
+  "recommendedTitles": ["Title 1", "Title 2", "Title 3"],
+  "videoDescription": "Full formatted YouTube video description with Chapters and closing hashtags",
+  "tags": ["exact subject name", "subject documentary", "long tail seo tag"],
+  "hashtags": ["#SubjectName", "#Documentary", "#Biography"]
+}`, personName, biographicalField, country, targetDurationMinutes, headline, achievement, chapterTimestamps, biography)
+
+	var out VideoPackagingAI
+	if err := CallGeminiJSONWithOptions(ctx, sysPrompt, userPrompt, &out, GeminiCallOptions{
+		Temperature:     0.35,
+		MaxOutputTokens: 2048,
+		Timeout:         25 * time.Second,
+	}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // GenerateScriptWithGemini is preserved for legacy callers, wrapping the 2-stage prestige script writer.
 func GenerateScriptWithGemini(
 	ctx context.Context,

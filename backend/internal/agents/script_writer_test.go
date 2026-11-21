@@ -261,3 +261,41 @@ func TestSplitLongNarrationEnforcesSevenSecondCutaways(t *testing.T) {
 		t.Fatalf("expected distinct fresh visuals when splitting long speech, got only %d", len(distinctVisuals))
 	}
 }
+
+func TestVideoPackagingDescriptionTagsAndHashtags(t *testing.T) {
+	dom := domainTechInnovation()
+	seo := BuildDeterministicVideoPackaging(
+		"Elena Vance",
+		dom,
+		"United States",
+		"Elena Vance faces parliamentary testimony after two decades of platform growth",
+		"Built an encrypted network used by 900 million people before international privacy hearings.",
+		"Traces Elena Vance from a university basement to multinational platform governance.",
+		"",
+		20,
+	)
+
+	if !strings.Contains(seo.VideoDescription, "Chapters:") || !strings.Contains(seo.VideoDescription, "0:00 Cold Open") {
+		t.Fatalf("expected Chapters timestamps in video description, got:\n%s", seo.VideoDescription)
+	}
+	if len(seo.Tags) < 12 {
+		t.Fatalf("expected >= 12 high-performing SEO tags, got %d", len(seo.Tags))
+	}
+	if seo.TagsCharCount > 500 {
+		t.Fatalf("expected total tag characters <= 500 for YouTube limit, got %d", seo.TagsCharCount)
+	}
+	for _, tag := range seo.Tags {
+		if strings.HasPrefix(tag, "#") {
+			t.Fatalf("SEO tag should not start with #: %q", tag)
+		}
+	}
+	if len(seo.Hashtags) < 6 {
+		t.Fatalf("expected >= 6 hashtags, got %d", len(seo.Hashtags))
+	}
+	for _, h := range seo.Hashtags {
+		if !strings.HasPrefix(h, "#") || strings.Contains(h, " ") {
+			t.Fatalf("invalid hashtag format: %q", h)
+		}
+	}
+}
+
