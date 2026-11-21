@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   CheckCircle2, Copy, Download, ExternalLink, Film,
-  Mic, Save, Trash2, Upload
+  Hash, Mic, RefreshCw, Save, Sparkles, Tag, Trash2, Upload
 } from 'lucide-react';
 import { apiFetch } from '../api/client';
 import { StageBadge } from './DiscoveryPages';
@@ -292,6 +292,11 @@ export const ProductionStudioPage: React.FC = () => {
   const [biographicalField, setBiographicalField] = useState('auto');
   const [narrativeStyle, setNarrativeStyle] = useState('Investigative Archival Documentary');
   const [scriptViewMode, setScriptViewMode] = useState<'realigned' | 'raw'>('realigned');
+  const [ytDescription, setYtDescription] = useState('');
+  const [ytTagsInput, setYtTagsInput] = useState('');
+  const [ytHashtagsInput, setYtHashtagsInput] = useState('');
+  const [seoBusy, setSeoBusy] = useState(false);
+  const [seoSaved, setSeoSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copiedId, setCopiedId] = useState('');
   const [exportResult, setExportResult] = useState<any>(null);
@@ -303,6 +308,9 @@ export const ProductionStudioPage: React.FC = () => {
       setWs(data);
       setScriptText(data.script?.fullNarrationText || '');
       setDurationMinutes(data.project?.targetDurationMinutes || 20);
+      setYtDescription(data.project?.youtubeDescription || '');
+      setYtTagsInput(Array.isArray(data.project?.youtubeTags) ? data.project.youtubeTags.join(', ') : '');
+      setYtHashtagsInput(Array.isArray(data.project?.youtubeHashtags) ? data.project.youtubeHashtags.join(' ') : '');
     }).catch(() => {
       navigate('/documentaries', { replace: true });
     });
@@ -448,9 +456,49 @@ export const ProductionStudioPage: React.FC = () => {
       const endpoint = assembleVideo ? `/api/projects/${proj.id}/assemble-video` : `/api/projects/${proj.id}/export`;
       const res = await apiFetch(endpoint, { method: 'POST', body: '{}' });
       setExportResult(res);
-      loadWorkspace();
+      loadWorkspace(proj.id);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const parsedYtTags = ytTagsInput
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const parsedYtHashtags = ytHashtagsInput
+    .split(/[\s,]+/)
+    .map((h) => h.trim())
+    .filter(Boolean)
+    .map((h) => (h.startsWith('#') ? h : `#${h}`));
+  const ytTagsCharCount = parsedYtTags.join(', ').length;
+
+  const handleGenerateProjectSEO = async () => {
+    setSeoBusy(true);
+    try {
+      await apiFetch(`/api/projects/${proj.id}/seo/generate`, { method: 'POST', body: '{}' });
+      loadWorkspace(proj.id);
+    } finally {
+      setSeoBusy(false);
+    }
+  };
+
+  const handleSaveProjectSEO = async () => {
+    setSeoBusy(true);
+    try {
+      await apiFetch(`/api/projects/${proj.id}/seo`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          youtubeDescription: ytDescription,
+          youtubeTags: parsedYtTags,
+          youtubeHashtags: parsedYtHashtags,
+        }),
+      });
+      setSeoSaved(true);
+      setTimeout(() => setSeoSaved(false), 2000);
+      loadWorkspace(proj.id);
+    } finally {
+      setSeoBusy(false);
     }
   };
 
@@ -513,10 +561,32 @@ export const ProductionStudioPage: React.FC = () => {
       {/* TAB 1: OVERVIEW */}
       {activeTab === 'overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 nexa-card rounded-3xl p-6 space-y-4">
-            <h2 className="text-base font-black text-display text-nexa-text-primary">
-              YouTube Packaging & Creative Direction
-            </h2>
+          <div className="lg:col-span-2 nexa-card rounded-3xl p-6 space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-base font-black text-display text-nexa-text-primary">
+                YouTube Packaging, SEO &amp; Creative Direction
+              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleGenerateProjectSEO}
+                  disabled={seoBusy}
+                  className="px-3.5 py-1.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm shadow-nexa-brand/20 cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  {seoBusy ? 'Writing SEO...' : 'Generate Description, Tags & Hashtags'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveProjectSEO}
+                  disabled={seoBusy}
+                  className="px-3.5 py-1.5 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-extrabold text-nexa-text-primary flex items-center gap-1 cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" /> {seoSaved ? 'Saved!' : 'Save SEO'}
+                </button>
+              </div>
+            </div>
+
             <div>
               <div className="text-xs font-extrabold text-nexa-text-muted uppercase">
                 Recommended YouTube Titles
@@ -525,13 +595,129 @@ export const ProductionStudioPage: React.FC = () => {
                 {(proj.youtubeTitles || []).map((t: string, i: number) => (
                   <li
                     key={i}
-                    className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border text-xs font-bold text-nexa-text-primary"
+                    className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border text-xs font-bold text-nexa-text-primary flex items-center justify-between gap-2"
                   >
-                    {i + 1}. {t}
+                    <span>{i + 1}. {t}</span>
+                    <button
+                      type="button"
+                      onClick={() => copyPrompt(t, `TITLE_${i}`)}
+                      className="text-[11px] font-extrabold text-nexa-brand hover:underline shrink-0 cursor-pointer"
+                    >
+                      {copiedId === `TITLE_${i}` ? 'Copied!' : 'Copy'}
+                    </button>
                   </li>
                 ))}
               </ul>
             </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-extrabold text-nexa-text-muted uppercase">
+                  Video Description &amp; Script Chapter Timestamps ({ytDescription.length} chars)
+                </div>
+                <button
+                  type="button"
+                  onClick={() => copyPrompt(ytDescription, 'YT_DESC')}
+                  disabled={!ytDescription}
+                  className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" /> {copiedId === 'YT_DESC' ? 'Copied Description!' : 'Copy Description'}
+                </button>
+              </div>
+              <textarea
+                value={ytDescription}
+                onChange={(e) => setYtDescription(e.target.value)}
+                rows={9}
+                placeholder="Click 'Generate Description, Tags & Hashtags' to write a YouTube description synced with your script chapters..."
+                className="w-full p-3.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs leading-relaxed text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-extrabold text-nexa-text-muted uppercase flex items-center gap-1">
+                    <Tag className="w-3.5 h-3.5 text-nexa-brand" />
+                    High-Performing Tags ({parsedYtTags.length})
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                        ytTagsCharCount > 500
+                          ? 'bg-rose-500/10 text-rose-500 border-rose-500/25'
+                          : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/25'
+                      }`}
+                    >
+                      {ytTagsCharCount}/500
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => copyPrompt(parsedYtTags.join(', '), 'YT_TAGS')}
+                      disabled={parsedYtTags.length === 0}
+                      className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" /> {copiedId === 'YT_TAGS' ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  value={ytTagsInput}
+                  onChange={(e) => setYtTagsInput(e.target.value)}
+                  rows={4}
+                  placeholder="Comma-separated high-performing YouTube tags..."
+                  className="w-full p-3 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+                />
+                {parsedYtTags.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                    {parsedYtTags.map((t, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2.5 py-0.5 rounded-full bg-nexa-bg-base border border-nexa-border text-[11px] font-semibold text-nexa-text-secondary"
+                      >
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-extrabold text-nexa-text-muted uppercase flex items-center gap-1">
+                    <Hash className="w-3.5 h-3.5 text-nexa-brand" />
+                    Hashtags ({parsedYtHashtags.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => copyPrompt(parsedYtHashtags.join(' '), 'YT_HASH')}
+                    disabled={parsedYtHashtags.length === 0}
+                    className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                  >
+                    <Copy className="w-3 h-3" /> {copiedId === 'YT_HASH' ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+                <textarea
+                  value={ytHashtagsInput}
+                  onChange={(e) => setYtHashtagsInput(e.target.value)}
+                  rows={4}
+                  placeholder="#Documentary #Biography #TrueStory"
+                  className="w-full p-3 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+                />
+                {parsedYtHashtags.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {parsedYtHashtags.map((h, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2.5 py-0.5 rounded-full bg-nexa-brand/10 border border-nexa-brand/20 text-[11px] font-extrabold text-nexa-brand"
+                      >
+                        {h}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div>
               <div className="text-xs font-extrabold text-nexa-text-muted uppercase">Thumbnail Concept</div>
               <p className="mt-1 p-3.5 rounded-2xl bg-nexa-brand/10 border border-nexa-brand/20 text-xs text-nexa-text-primary">
@@ -644,9 +830,10 @@ export const ProductionStudioPage: React.FC = () => {
                 <button
                   onClick={handleRegenerateScript}
                   disabled={busy}
-                  className="px-3.5 py-1.5 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-bold cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                 >
-                  {busy ? 'Writing Chapters...' : 'Regenerate Full Script'}
+                  <RefreshCw className={`w-3.5 h-3.5 ${busy ? 'animate-spin' : ''}`} />
+                  {busy ? 'Writing Chapters...' : 'Rerun Script Processing'}
                 </button>
                 <button
                   onClick={handleSaveScript}
@@ -1099,8 +1286,8 @@ export const ProductionStudioPage: React.FC = () => {
               Production Package Export & FFmpeg 16:9 Video Assembly
             </h2>
             <p className="text-xs text-nexa-text-secondary">
-              Produces an organized ZIP archive containing <code>documentary-script.docx</code>, <code>narration.txt</code>,{' '}
-              <code>visual-timeline.csv</code>, <code>image-prompts.txt</code>, <code>subtitles.srt</code>,{' '}
+              Produces an organized ZIP archive containing <code>documentary-script.docx</code>, <code>realigned-script.md</code>, <code>narration.txt</code>,{' '}
+              <code>youtube-seo-packaging.md</code>, <code>visual-timeline.csv</code>, <code>image-prompts.txt</code>, <code>subtitles.srt</code>,{' '}
               <code>production-manifest.json</code>, <code>research-sources.md</code>, <code>fact-check-report.md</code>, character reference sheets, storyboard frames, and narration audio.
             </p>
             <div className="flex flex-wrap gap-3">

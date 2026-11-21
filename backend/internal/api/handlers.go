@@ -558,6 +558,101 @@ func RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 
+		if len(parts) == 2 && parts[1] == "reprocess-script" && r.Method == http.MethodPost {
+			var req struct {
+				TargetDurationMinutes int    `json:"targetDurationMinutes"`
+				Style                 string `json:"style"`
+				BiographicalField     string `json:"biographicalField"`
+			}
+			if r.Body != nil {
+				_ = readJSON(r, &req)
+			}
+			if req.TargetDurationMinutes < 15 || req.TargetDurationMinutes > 25 {
+				req.TargetDurationMinutes = 20
+			}
+			if strings.TrimSpace(req.Style) == "" {
+				req.Style = "Investigative Archival Documentary"
+			}
+			if strings.TrimSpace(req.BiographicalField) == "" {
+				req.BiographicalField = "auto"
+			}
+
+			projID, err := approveDiscoveryForDocumentary(r.Context(), discID)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			scrID, err := agents.GenerateDocumentaryScriptWithOptions(r.Context(), projID, req.TargetDurationMinutes, req.Style, req.BiographicalField)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			_, _ = agents.GenerateCharacterReferences(r.Context(), projID)
+			segCount, _ := agents.GenerateVisualTimeline(r.Context(), projID)
+			_, _, _ = agents.GenerateProjectAudioAndSubtitles(r.Context(), projID)
+			_, _ = agents.GenerateProjectVideoPackaging(r.Context(), projID)
+			writeJSON(w, 200, map[string]any{
+				"ok":           true,
+				"projectId":    projID,
+				"scriptId":     scrID,
+				"segmentCount": segCount,
+			})
+			return
+		}
+
+		if len(parts) == 3 && parts[1] == "seo" && parts[2] == "generate" && r.Method == http.MethodPost {
+			seo, err := agents.GenerateOpportunityVideoPackaging(r.Context(), discID)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]any{
+				"ok":                true,
+				"videoDescription":  seo.VideoDescription,
+				"videoTags":         seo.Tags,
+				"videoHashtags":     seo.Hashtags,
+				"recommendedTitles": seo.RecommendedTitles,
+				"tagsCharCount":     seo.TagsCharCount,
+				"usedGemini":        seo.UsedGemini,
+			})
+			return
+		}
+
+		if len(parts) == 2 && parts[1] == "seo" && r.Method == http.MethodPut {
+			var req struct {
+				VideoDescription string   `json:"videoDescription"`
+				VideoTags        []string `json:"videoTags"`
+				VideoHashtags    []string `json:"videoHashtags"`
+			}
+			_ = readJSON(r, &req)
+			normTags := agents.NormalizeTags(req.VideoTags, 480)
+			normHashtags := agents.NormalizeHashtags(req.VideoHashtags, 12)
+			tagsJSON, _ := json.Marshal(normTags)
+			hashtagsJSON, _ := json.Marshal(normHashtags)
+			_, err := db.DB.ExecContext(r.Context(), `
+				UPDATE discoveries
+				SET video_description = $2, video_tags_json = $3, video_hashtags_json = $4, updated_at = NOW()
+				WHERE id = $1
+			`, discID, strings.TrimSpace(req.VideoDescription), string(tagsJSON), string(hashtagsJSON))
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			_, _ = db.DB.ExecContext(r.Context(), `
+				UPDATE documentary_projects
+				SET youtube_description = $2, youtube_tags_json = $3, youtube_hashtags_json = $4, updated_at = NOW()
+				WHERE discovery_id = $1
+			`, discID, strings.TrimSpace(req.VideoDescription), string(tagsJSON), string(hashtagsJSON))
+			writeJSON(w, 200, map[string]any{
+				"ok":               true,
+				"videoDescription": strings.TrimSpace(req.VideoDescription),
+				"videoTags":        normTags,
+				"videoHashtags":    normHashtags,
+				"tagsCharCount":    agents.TagsTotalChars(normTags),
+			})
+			return
+		}
+
 		if len(parts) == 2 && parts[1] == "archive" && r.Method == http.MethodPost {
 			_, err := db.DB.ExecContext(r.Context(), `
 				UPDATE discoveries SET status = 'archived', updated_at = NOW() WHERE id = $1
@@ -861,9 +956,61 @@ func RegisterRoutes(mux *http.ServeMux) {
 				writeJSON(w, 500, map[string]string{"error": err.Error()})
 				return
 			}
-			// Keep <=7s Visual Timeline automatically synchronized with the newly generated realigned script
+			// Keep <=7s Visual Timeline and YouTube chapter description automatically synchronized
 			segCount, _ := agents.GenerateVisualTimeline(ctx, projectID)
+			_, _ = agents.GenerateProjectVideoPackaging(ctx, projectID)
 			writeJSON(w, 200, map[string]any{"ok": true, "scriptId": scrID, "segmentCount": segCount})
+
+		case "seo/generate":
+			seo, err := agents.GenerateProjectVideoPackaging(ctx, projectID)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]any{
+				"ok":                 true,
+				"youtubeDescription": seo.VideoDescription,
+				"youtubeTags":        seo.Tags,
+				"youtubeHashtags":    seo.Hashtags,
+				"youtubeTitles":      seo.RecommendedTitles,
+				"tagsCharCount":      seo.TagsCharCount,
+				"usedGemini":         seo.UsedGemini,
+			})
+
+		case "seo":
+			if r.Method == http.MethodPut {
+				var req struct {
+					YoutubeDescription string   `json:"youtubeDescription"`
+					YoutubeTags        []string `json:"youtubeTags"`
+					YoutubeHashtags    []string `json:"youtubeHashtags"`
+				}
+				_ = readJSON(r, &req)
+				normTags := agents.NormalizeTags(req.YoutubeTags, 480)
+				normHashtags := agents.NormalizeHashtags(req.YoutubeHashtags, 12)
+				tagsJSON, _ := json.Marshal(normTags)
+				hashtagsJSON, _ := json.Marshal(normHashtags)
+				_, err := db.DB.ExecContext(ctx, `
+					UPDATE documentary_projects
+					SET youtube_description = $2, youtube_tags_json = $3, youtube_hashtags_json = $4, updated_at = NOW()
+					WHERE id = $1
+				`, projectID, strings.TrimSpace(req.YoutubeDescription), string(tagsJSON), string(hashtagsJSON))
+				if err != nil {
+					writeJSON(w, 500, map[string]string{"error": err.Error()})
+					return
+				}
+				_, _ = db.DB.ExecContext(ctx, `
+					UPDATE discoveries
+					SET video_description = $2, video_tags_json = $3, video_hashtags_json = $4, updated_at = NOW()
+					WHERE id = (SELECT discovery_id FROM documentary_projects WHERE id = $1)
+				`, projectID, strings.TrimSpace(req.YoutubeDescription), string(tagsJSON), string(hashtagsJSON))
+				writeJSON(w, 200, map[string]any{
+					"ok":                 true,
+					"youtubeDescription": strings.TrimSpace(req.YoutubeDescription),
+					"youtubeTags":        normTags,
+					"youtubeHashtags":    normHashtags,
+					"tagsCharCount":      agents.TagsTotalChars(normTags),
+				})
+			}
 
 		case "script":
 			if r.Method == http.MethodPut {
@@ -1364,6 +1511,21 @@ func getDiscoveryDetail(ctx interface {
 	var existingProjectID string
 	_ = db.DB.QueryRowContext(ctx, `SELECT id FROM documentary_projects WHERE discovery_id = $1 OR person_id = $2 LIMIT 1`, actualDiscID, personID).Scan(&existingProjectID)
 
+	var vidDesc, vidTagsJSON, vidHashtagsJSON string
+	_ = db.DB.QueryRowContext(ctx, `
+		SELECT COALESCE(video_description, ''), COALESCE(video_tags_json, '[]'), COALESCE(video_hashtags_json, '[]')
+		FROM discoveries WHERE id = $1
+	`, actualDiscID).Scan(&vidDesc, &vidTagsJSON, &vidHashtagsJSON)
+	var vidTags, vidHashtags []string
+	_ = json.Unmarshal([]byte(vidTagsJSON), &vidTags)
+	_ = json.Unmarshal([]byte(vidHashtagsJSON), &vidHashtags)
+	if vidTags == nil {
+		vidTags = []string{}
+	}
+	if vidHashtags == nil {
+		vidHashtags = []string{}
+	}
+
 	target["underdogAssessment"] = map[string]any{
 		"classification":          classification,
 		"originsSummary":          origins,
@@ -1382,6 +1544,10 @@ func getDiscoveryDetail(ctx interface {
 	target["trendHistory"] = observations
 	target["research"] = dossier
 	target["projectId"] = existingProjectID
+	target["videoDescription"] = vidDesc
+	target["videoTags"] = vidTags
+	target["videoHashtags"] = vidHashtags
+	target["tagsCharCount"] = agents.TagsTotalChars(vidTags)
 
 	return target, nil
 }
@@ -1549,6 +1715,7 @@ func approveDiscoveryForDocumentary(ctx interface {
 	_, _ = agents.GenerateCharacterReferences(bgCtx, projID)
 	_, _ = agents.GenerateVisualTimeline(bgCtx, projID)
 	_, _, _ = agents.GenerateProjectAudioAndSubtitles(bgCtx, projID)
+	_, _ = agents.GenerateProjectVideoPackaging(bgCtx, projID)
 
 	return projID, nil
 }
@@ -1559,21 +1726,33 @@ func getProjectWorkspace(ctx interface {
 	Err() error
 	Value(key any) any
 }, projectID string) (map[string]any, error) {
-	var pID, dID, title, slug, status, style, ar, thumb, ytTitlesStr, ytDesc, music, ua string
+	var pID, dID, title, slug, status, style, ar, thumb, ytTitlesStr, ytDesc, ytTagsStr, ytHashtagsStr, music, ua string
 	var durMin, imgInt int
 	err := db.DB.QueryRowContext(ctx, `
 		SELECT person_id, COALESCE(discovery_id, ''), title, slug, status, target_duration_minutes,
 		       visual_style, aspect_ratio, image_interval_seconds, COALESCE(thumbnail_concept, ''),
-		       COALESCE(youtube_titles_json, '[]'), COALESCE(youtube_description, ''), COALESCE(music_suggestions, ''),
-		       updated_at::text
+		       COALESCE(youtube_titles_json, '[]'), COALESCE(youtube_description, ''),
+		       COALESCE(youtube_tags_json, '[]'), COALESCE(youtube_hashtags_json, '[]'),
+		       COALESCE(music_suggestions, ''), updated_at::text
 		FROM documentary_projects WHERE id = $1
-	`, projectID).Scan(&pID, &dID, &title, &slug, &status, &durMin, &style, &ar, &imgInt, &thumb, &ytTitlesStr, &ytDesc, &music, &ua)
+	`, projectID).Scan(&pID, &dID, &title, &slug, &status, &durMin, &style, &ar, &imgInt, &thumb, &ytTitlesStr, &ytDesc, &ytTagsStr, &ytHashtagsStr, &music, &ua)
 	if err != nil {
 		return nil, err
 	}
 
-	var ytTitles []string
+	var ytTitles, ytTags, ytHashtags []string
 	_ = json.Unmarshal([]byte(ytTitlesStr), &ytTitles)
+	_ = json.Unmarshal([]byte(ytTagsStr), &ytTags)
+	_ = json.Unmarshal([]byte(ytHashtagsStr), &ytHashtags)
+	if ytTitles == nil {
+		ytTitles = []string{}
+	}
+	if ytTags == nil {
+		ytTags = []string{}
+	}
+	if ytHashtags == nil {
+		ytHashtags = []string{}
+	}
 
 	// Script
 	var scrID, hook, fullText, scrStatus string
@@ -1760,6 +1939,9 @@ func getProjectWorkspace(ctx interface {
 			"thumbnailConcept":      thumb,
 			"youtubeTitles":         ytTitles,
 			"youtubeDescription":    ytDesc,
+			"youtubeTags":           ytTags,
+			"youtubeHashtags":       ytHashtags,
+			"tagsCharCount":         agents.TagsTotalChars(ytTags),
 			"musicSuggestions":      music,
 			"updatedAt":             ua,
 		},

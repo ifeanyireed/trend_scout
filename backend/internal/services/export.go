@@ -335,6 +335,30 @@ func BuildProductionPackageZip(
 	_ = writeZipEntry(zw, "research-sources.md", []byte(sourcesMarkdown))
 	_ = writeZipEntry(zw, "fact-check-report.md", []byte(factCheckMarkdown))
 
+	// Write YouTube SEO Packaging (Description, High-Performing Tags, Hashtags & Titles)
+	var seoMd strings.Builder
+	seoMd.WriteString(fmt.Sprintf("# YouTube Video Packaging & SEO — %s\n\n", projectTitle))
+	if titles, ok := manifest["youtubeTitles"].([]string); ok && len(titles) > 0 {
+		seoMd.WriteString("## Recommended Titles\n")
+		for i, t := range titles {
+			seoMd.WriteString(fmt.Sprintf("%d. %s\n", i+1, t))
+		}
+		seoMd.WriteString("\n")
+	}
+	if desc, ok := manifest["youtubeDescription"].(string); ok && strings.TrimSpace(desc) != "" {
+		seoMd.WriteString("## Video Description\n\n")
+		seoMd.WriteString(strings.TrimSpace(desc) + "\n\n")
+	}
+	if tags, ok := manifest["youtubeTags"].([]string); ok && len(tags) > 0 {
+		seoMd.WriteString("## High-Performing Tags (Comma-Separated for YouTube Studio)\n\n")
+		seoMd.WriteString(strings.Join(tags, ", ") + "\n\n")
+	}
+	if hashtags, ok := manifest["youtubeHashtags"].([]string); ok && len(hashtags) > 0 {
+		seoMd.WriteString("## Hashtags\n\n")
+		seoMd.WriteString(strings.Join(hashtags, " ") + "\n")
+	}
+	_ = writeZipEntry(zw, "youtube-seo-packaging.md", []byte(seoMd.String()))
+
 	for _, s := range segments {
 		if s.ImageAssetPath != "" {
 			localPath := filepath.Join(db.StorageRoot, strings.TrimPrefix(s.ImageAssetPath, "/storage/"))

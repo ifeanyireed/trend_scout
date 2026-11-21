@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
-  Archive, ArchiveRestore, ArrowRight, Bookmark, Compass, Eye, EyeOff, Film, Flame, Lock, Search, ShieldCheck,
-  Sparkles, Trophy, TrendingUp, Activity, Bell, CheckCircle2, AlertCircle, Clock
+  Archive, ArchiveRestore, ArrowRight, Bookmark, Compass, Copy, Eye, EyeOff, Film, Flame, Hash, Lock,
+  RefreshCw, Save, Search, ShieldCheck, Sparkles, Tag, Trophy, TrendingUp, Activity, Bell, CheckCircle2, AlertCircle, Clock
 } from 'lucide-react';
 import { apiFetch, hasActiveSession, setAuthSession } from '../api/client';
 import { PaginationController } from '../components/PaginationController';
@@ -810,10 +810,28 @@ export const OpportunityDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const [detail, setDetail] = useState<any>(null);
   const [busy, setBusy] = useState(false);
+  const [seoBusy, setSeoBusy] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
+  const [copiedKey, setCopiedKey] = useState('');
+  const [videoDescription, setVideoDescription] = useState('');
+  const [tagsInput, setTagsInput] = useState('');
+  const [hashtagsInput, setHashtagsInput] = useState('');
+  const [seoSaved, setSeoSaved] = useState(false);
+
+  const syncSeoState = (d: any) => {
+    setVideoDescription(d?.videoDescription || '');
+    setTagsInput(Array.isArray(d?.videoTags) ? d.videoTags.join(', ') : '');
+    setHashtagsInput(Array.isArray(d?.videoHashtags) ? d.videoHashtags.join(' ') : '');
+  };
 
   const load = () => {
     if (!id) return;
-    apiFetch(`/api/discoveries/${id}`).then(setDetail).catch(console.error);
+    apiFetch(`/api/discoveries/${id}`)
+      .then((res) => {
+        setDetail(res);
+        syncSeoState(res);
+      })
+      .catch(console.error);
   };
 
   useEffect(() => {
@@ -826,6 +844,23 @@ export const OpportunityDetailPage: React.FC = () => {
   const rat = detail.scoreRationale || {};
   const research = detail.research || {};
 
+  const parsedTags = tagsInput
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const parsedHashtags = hashtagsInput
+    .split(/[\s,]+/)
+    .map((h) => h.trim())
+    .filter(Boolean)
+    .map((h) => (h.startsWith('#') ? h : `#${h}`));
+  const tagsCharCount = parsedTags.join(', ').length;
+
+  const copyText = (text: string, key: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(''), 1800);
+  };
+
   const handleApproveForDocumentary = async () => {
     setBusy(true);
     try {
@@ -833,6 +868,64 @@ export const OpportunityDetailPage: React.FC = () => {
       navigate(`/production/${res.projectId}`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleRerunScriptProcessing = async () => {
+    setReprocessing(true);
+    try {
+      const res = await apiFetch(`/api/discoveries/${detail.id}/reprocess-script`, {
+        method: 'POST',
+        body: JSON.stringify({
+          targetDurationMinutes: 20,
+          style: 'Investigative Archival Documentary',
+          biographicalField: 'auto',
+        }),
+      });
+      if (res?.projectId) {
+        navigate(`/production/${res.projectId}?tab=script`);
+      } else {
+        load();
+      }
+    } finally {
+      setReprocessing(false);
+    }
+  };
+
+  const handleGenerateSEO = async () => {
+    setSeoBusy(true);
+    try {
+      const res = await apiFetch(`/api/discoveries/${detail.id}/seo/generate`, {
+        method: 'POST',
+        body: '{}',
+      });
+      setVideoDescription(res.videoDescription || '');
+      setTagsInput(Array.isArray(res.videoTags) ? res.videoTags.join(', ') : '');
+      setHashtagsInput(Array.isArray(res.videoHashtags) ? res.videoHashtags.join(' ') : '');
+      load();
+    } finally {
+      setSeoBusy(false);
+    }
+  };
+
+  const handleSaveSEO = async () => {
+    setSeoBusy(true);
+    try {
+      const res = await apiFetch(`/api/discoveries/${detail.id}/seo`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          videoDescription,
+          videoTags: parsedTags,
+          videoHashtags: parsedHashtags,
+        }),
+      });
+      setVideoDescription(res.videoDescription || '');
+      setTagsInput(Array.isArray(res.videoTags) ? res.videoTags.join(', ') : '');
+      setHashtagsInput(Array.isArray(res.videoHashtags) ? res.videoHashtags.join(' ') : '');
+      setSeoSaved(true);
+      setTimeout(() => setSeoSaved(false), 2000);
+    } finally {
+      setSeoBusy(false);
     }
   };
 
@@ -905,19 +998,174 @@ export const OpportunityDetailPage: React.FC = () => {
             </button>
             <button
               onClick={handleRefreshResearch}
-              disabled={busy}
+              disabled={busy || reprocessing}
               className="px-4 py-2.5 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-extrabold text-nexa-text-primary cursor-pointer"
             >
               Run Deep Fact Verification
             </button>
+            {detail.projectId && (
+              <button
+                onClick={handleRerunScriptProcessing}
+                disabled={busy || reprocessing}
+                className="px-4 py-2.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${reprocessing ? 'animate-spin' : ''}`} />
+                {reprocessing ? 'Reprocessing Script...' : 'Rerun Script Processing'}
+              </button>
+            )}
             <button
               onClick={handleApproveForDocumentary}
-              disabled={busy}
+              disabled={busy || reprocessing}
               className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold flex items-center gap-2 shadow-lg shadow-nexa-brand/25 cursor-pointer"
             >
               <Film className="w-4 h-4" />
               {detail.projectId ? 'Open Documentary Workspace →' : 'Approve & Generate Documentary →'}
             </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Video Description, High-Performing Tags & Hashtags */}
+      <div className="nexa-card rounded-3xl p-6 space-y-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-black text-display text-nexa-text-primary flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-nexa-brand" />
+              Video Description, High-Performing Tags &amp; Hashtags
+            </h2>
+            <p className="text-xs text-nexa-text-secondary mt-0.5">
+              Search-optimized YouTube documentary description with chapter timestamps, high-intent SEO tags (≤500 chars), and hashtags.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleGenerateSEO}
+              disabled={seoBusy}
+              className="px-4 py-2 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold flex items-center gap-1.5 shadow-md shadow-nexa-brand/20 cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              {seoBusy ? 'Generating SEO...' : videoDescription ? 'Regenerate Description, Tags & Hashtags' : 'Generate Description, Tags & Hashtags'}
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveSEO}
+              disabled={seoBusy}
+              className="px-4 py-2 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-extrabold text-nexa-text-primary flex items-center gap-1.5 cursor-pointer"
+            >
+              <Save className="w-3.5 h-3.5" />
+              {seoSaved ? 'Saved!' : 'Save Changes'}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          <div className="lg:col-span-7 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-extrabold uppercase text-nexa-text-muted">
+                YouTube Video Description ({videoDescription.length} chars)
+              </label>
+              <button
+                type="button"
+                onClick={() => copyText(videoDescription, 'OPP_DESC')}
+                disabled={!videoDescription}
+                className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+              >
+                <Copy className="w-3 h-3" /> {copiedKey === 'OPP_DESC' ? 'Copied Description!' : 'Copy Description'}
+              </button>
+            </div>
+            <textarea
+              value={videoDescription}
+              onChange={(e) => setVideoDescription(e.target.value)}
+              rows={11}
+              placeholder="Click 'Generate Description, Tags & Hashtags' to write a YouTube-ready documentary description with chapter timestamps..."
+              className="w-full p-3.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs leading-relaxed text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+            />
+          </div>
+
+          <div className="lg:col-span-5 space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-extrabold uppercase text-nexa-text-muted flex items-center gap-1.5">
+                  <Tag className="w-3.5 h-3.5 text-nexa-brand" />
+                  High-Performing Tags ({parsedTags.length})
+                </label>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                      tagsCharCount > 500
+                        ? 'bg-rose-500/10 text-rose-500 border-rose-500/25'
+                        : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/25'
+                    }`}
+                  >
+                    {tagsCharCount} / 500 chars
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => copyText(parsedTags.join(', '), 'OPP_TAGS')}
+                    disabled={parsedTags.length === 0}
+                    className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                  >
+                    <Copy className="w-3 h-3" /> {copiedKey === 'OPP_TAGS' ? 'Copied!' : 'Copy Tags'}
+                  </button>
+                </div>
+              </div>
+              <textarea
+                value={tagsInput}
+                onChange={(e) => setTagsInput(e.target.value)}
+                rows={4}
+                placeholder="Comma-separated high-performing YouTube tags..."
+                className="w-full p-3 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+              />
+              {parsedTags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pt-1">
+                  {parsedTags.map((t, idx) => (
+                    <span
+                      key={idx}
+                      className="px-2.5 py-0.5 rounded-full bg-nexa-bg-base border border-nexa-border text-[11px] font-semibold text-nexa-text-secondary"
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-extrabold uppercase text-nexa-text-muted flex items-center gap-1.5">
+                  <Hash className="w-3.5 h-3.5 text-nexa-brand" />
+                  Hashtags ({parsedHashtags.length})
+                </label>
+                <button
+                  type="button"
+                  onClick={() => copyText(parsedHashtags.join(' '), 'OPP_HASH')}
+                  disabled={parsedHashtags.length === 0}
+                  className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" /> {copiedKey === 'OPP_HASH' ? 'Copied!' : 'Copy Hashtags'}
+                </button>
+              </div>
+              <input
+                type="text"
+                value={hashtagsInput}
+                onChange={(e) => setHashtagsInput(e.target.value)}
+                placeholder="#Documentary #Biography #TrueStory"
+                className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+              />
+              {parsedHashtags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {parsedHashtags.map((h, idx) => (
+                    <span
+                      key={idx}
+                      className="px-2.5 py-0.5 rounded-full bg-nexa-brand/10 border border-nexa-brand/20 text-[11px] font-extrabold text-nexa-brand"
+                    >
+                      {h}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

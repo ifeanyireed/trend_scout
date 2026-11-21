@@ -1691,14 +1691,33 @@ func GenerateProjectAudioAndSubtitles(ctx context.Context, projectID string) (st
 }
 
 func ExportProductionPackage(ctx context.Context, projectID string, assembleVideo bool) (map[string]any, error) {
-	var personID, projectTitle, visualStyle, aspectRatio, thumbConcept, ytTitlesJSON, ytDesc, musicSug string
+	var personID, projectTitle, visualStyle, aspectRatio, thumbConcept, ytTitlesJSON, ytDesc, ytTagsJSON, ytHashtagsJSON, musicSug string
 	err := db.DB.QueryRowContext(ctx, `
 		SELECT person_id, title, visual_style, aspect_ratio, COALESCE(thumbnail_concept, ''),
-		       COALESCE(youtube_titles_json, '[]'), COALESCE(youtube_description, ''), COALESCE(music_suggestions, '')
+		       COALESCE(youtube_titles_json, '[]'), COALESCE(youtube_description, ''),
+		       COALESCE(youtube_tags_json, '[]'), COALESCE(youtube_hashtags_json, '[]'),
+		       COALESCE(music_suggestions, '')
 		FROM documentary_projects WHERE id = $1
-	`, projectID).Scan(&personID, &projectTitle, &visualStyle, &aspectRatio, &thumbConcept, &ytTitlesJSON, &ytDesc, &musicSug)
+	`, projectID).Scan(&personID, &projectTitle, &visualStyle, &aspectRatio, &thumbConcept, &ytTitlesJSON, &ytDesc, &ytTagsJSON, &ytHashtagsJSON, &musicSug)
 	if err != nil {
 		return nil, err
+	}
+
+	if ytTagsJSON == "[]" || ytHashtagsJSON == "[]" || strings.TrimSpace(ytDesc) == "" {
+		if seo, errSEO := GenerateProjectVideoPackaging(ctx, projectID); errSEO == nil && seo != nil {
+			ytDesc = seo.VideoDescription
+			if b, errM := json.Marshal(seo.Tags); errM == nil {
+				ytTagsJSON = string(b)
+			}
+			if b, errM := json.Marshal(seo.Hashtags); errM == nil {
+				ytHashtagsJSON = string(b)
+			}
+			if ytTitlesJSON == "[]" {
+				if b, errM := json.Marshal(seo.RecommendedTitles); errM == nil {
+					ytTitlesJSON = string(b)
+				}
+			}
+		}
 	}
 
 	var personName string
@@ -1773,8 +1792,10 @@ func ExportProductionPackage(ctx context.Context, projectID string, assembleVide
 		cRows.Close()
 	}
 
-	var ytTitles []string
+	var ytTitles, ytTags, ytHashtags []string
 	_ = json.Unmarshal([]byte(ytTitlesJSON), &ytTitles)
+	_ = json.Unmarshal([]byte(ytTagsJSON), &ytTags)
+	_ = json.Unmarshal([]byte(ytHashtagsJSON), &ytHashtags)
 	manifest := map[string]any{
 		"projectId":          projectID,
 		"projectTitle":       projectTitle,
@@ -1785,11 +1806,15 @@ func ExportProductionPackage(ctx context.Context, projectID string, assembleVide
 		"thumbnailConcept":   thumbConcept,
 		"youtubeTitles":      ytTitles,
 		"youtubeDescription": ytDesc,
+		"youtubeTags":        ytTags,
+		"youtubeHashtags":    ytHashtags,
 		"musicSuggestions":   musicSug,
 		"exportedAt":         time.Now().UTC().Format(time.RFC3339),
 		"includedFiles": []string{
 			"documentary-script.docx",
+			"realigned-script.md",
 			"narration.txt",
+			"youtube-seo-packaging.md",
 			"visual-timeline.csv",
 			"image-prompts.txt",
 			"subtitles.srt",

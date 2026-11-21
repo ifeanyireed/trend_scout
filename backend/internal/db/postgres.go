@@ -632,6 +632,12 @@ CREATE INDEX IF NOT EXISTS idx_timelines_person ON person_timelines(person_id, c
 CREATE INDEX IF NOT EXISTS idx_visual_segments_project ON visual_segments(project_id, segment_number);
 CREATE INDEX IF NOT EXISTS idx_bg_jobs_status_next ON background_jobs(status, next_run_at, priority DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at DESC);
+
+ALTER TABLE discoveries ADD COLUMN IF NOT EXISTS video_description TEXT NOT NULL DEFAULT '';
+ALTER TABLE discoveries ADD COLUMN IF NOT EXISTS video_tags_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE discoveries ADD COLUMN IF NOT EXISTS video_hashtags_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE documentary_projects ADD COLUMN IF NOT EXISTS youtube_tags_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE documentary_projects ADD COLUMN IF NOT EXISTS youtube_hashtags_json TEXT NOT NULL DEFAULT '[]';
 `
 	_, err := conn.ExecContext(ctx, schema)
 	return err
