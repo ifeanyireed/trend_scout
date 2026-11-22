@@ -117,11 +117,78 @@ func CallGeminiJSON(ctx context.Context, systemPrompt string, userPrompt string,
 	})
 }
 
+type GeminiTestResult struct {
+	Connected    bool   `json:"connected"`
+	ModelUsed    string `json:"modelUsed"`
+	EndpointType string `json:"endpointType"`
+	LatencyMs    int64  `json:"latencyMs"`
+	Error        string `json:"error,omitempty"`
+}
+
+// TestGeminiConnection runs a real live JSON probe against Google AI Studio or Vertex AI Express
+// so producers can immediately verify their Gemini key and model are working.
+func TestGeminiConnection(ctx context.Context, overrideKey string, overrideModel string) GeminiTestResult {
+	cfg := GetAIConfig(ctx)
+	if strings.TrimSpace(overrideKey) != "" {
+		cfg.GeminiAPIKey = strings.TrimSpace(overrideKey)
+	}
+	if strings.TrimSpace(overrideModel) != "" {
+		cfg.Model = strings.TrimSpace(overrideModel)
+	}
+
+	epType := "Google AI Studio"
+	if strings.HasPrefix(cfg.GeminiAPIKey, "AQ.") {
+		epType = "Vertex AI Express"
+	} else if strings.HasPrefix(cfg.GeminiAPIKey, "ya29.") {
+		epType = "Google OAuth2"
+	}
+
+	if cfg.GeminiAPIKey == "" {
+		return GeminiTestResult{
+			Connected:    false,
+			EndpointType: epType,
+			Error:        "No Gemini API key configured. Paste a Google AI Studio (AIza...) key or an enabled Vertex AI Express (AQ...) key.",
+		}
+	}
+
+	start := time.Now()
+	var probe struct {
+		Status string `json:"status"`
+	}
+	usedModel, err := callGeminiWithConfig(ctx, cfg,
+		`Return strictly valid JSON: {"status":"ok"}`,
+		`Respond with {"status":"ok"}`,
+		&probe,
+		GeminiCallOptions{Temperature: 0.1, MaxOutputTokens: 32, Timeout: 12 * time.Second},
+	)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return GeminiTestResult{
+			Connected:    false,
+			ModelUsed:    cfg.Model,
+			EndpointType: epType,
+			LatencyMs:    latency,
+			Error:        err.Error(),
+		}
+	}
+	return GeminiTestResult{
+		Connected:    true,
+		ModelUsed:    usedModel,
+		EndpointType: epType,
+		LatencyMs:    latency,
+	}
+}
+
 // CallGeminiJSONWithOptions invokes Gemini with configurable timeout, temperature, and output token ceiling.
 func CallGeminiJSONWithOptions(ctx context.Context, systemPrompt string, userPrompt string, dst any, opts GeminiCallOptions) error {
 	cfg := GetAIConfig(ctx)
+	_, err := callGeminiWithConfig(ctx, cfg, systemPrompt, userPrompt, dst, opts)
+	return err
+}
+
+func callGeminiWithConfig(ctx context.Context, cfg AIConfig, systemPrompt string, userPrompt string, dst any, opts GeminiCallOptions) (string, error) {
 	if cfg.GeminiAPIKey == "" {
-		return fmt.Errorf("GEMINI_API_KEY not configured")
+		return "", fmt.Errorf("GEMINI_API_KEY not configured")
 	}
 
 	temp := opts.Temperature
@@ -141,6 +208,9 @@ func CallGeminiJSONWithOptions(ctx context.Context, systemPrompt string, userPro
 		modelsToTry = append(modelsToTry, "gemini-2.0-flash")
 	}
 
+	isVertexExpressKey := strings.HasPrefix(cfg.GeminiAPIKey, "AQ.")
+	isOAuthToken := strings.HasPrefix(cfg.GeminiAPIKey, "ya29.")
+
 	var lastErr error
 	for _, model := range modelsToTry {
 		if model == "" || strings.Contains(model, " ") {
@@ -148,6 +218,11 @@ func CallGeminiJSONWithOptions(ctx context.Context, systemPrompt string, userPro
 		}
 
 		endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, cfg.GeminiAPIKey)
+		if isVertexExpressKey {
+			endpoint = fmt.Sprintf("https://aiplatform.googleapis.com/v1/publishers/google/models/%s:generateContent?key=%s", model, cfg.GeminiAPIKey)
+		} else if isOAuthToken {
+			endpoint = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model)
+		}
 		reqBody := geminiRequest{
 			SystemInstruction: &geminiContent{
 				Parts: []geminiPart{{Text: systemPrompt}},
@@ -167,18 +242,19 @@ func CallGeminiJSONWithOptions(ctx context.Context, systemPrompt string, userPro
 
 		payloadBytes, err := json.Marshal(reqBody)
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		client := &http.Client{Timeout: timeout}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
 		if err != nil {
-			return err
+			return "", err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-goog-api-key", cfg.GeminiAPIKey)
-		if strings.HasPrefix(cfg.GeminiAPIKey, "AQ.") || strings.HasPrefix(cfg.GeminiAPIKey, "ya29.") {
+		if isOAuthToken {
 			req.Header.Set("Authorization", "Bearer "+cfg.GeminiAPIKey)
+		} else if !isVertexExpressKey {
+			req.Header.Set("x-goog-api-key", cfg.GeminiAPIKey)
 		}
 
 		resp, err := client.Do(req)
@@ -201,11 +277,11 @@ func CallGeminiJSONWithOptions(ctx context.Context, systemPrompt string, userPro
 		}
 		if gResp.Error != nil {
 			lastErr = fmt.Errorf("gemini api error (%d): %s", gResp.Error.Code, gResp.Error.Message)
-			// Only retry another model if the model name itself was not found (404)
-			if gResp.Error.Code == 404 {
+			// Retry fallback model if requested model name does not exist (404/400)
+			if gResp.Error.Code == 404 || (gResp.Error.Code == 400 && strings.Contains(strings.ToLower(gResp.Error.Message), "model")) {
 				continue
 			}
-			return lastErr
+			return "", lastErr
 		}
 		if len(gResp.Candidates) == 0 || len(gResp.Candidates[0].Content.Parts) == 0 {
 			lastErr = fmt.Errorf("gemini returned empty candidates")
@@ -222,10 +298,10 @@ func CallGeminiJSONWithOptions(ctx context.Context, systemPrompt string, userPro
 			lastErr = fmt.Errorf("unmarshal gemini json: %w", err)
 			continue
 		}
-		return nil
+		return model, nil
 	}
 
-	return lastErr
+	return "", lastErr
 }
 
 type RawSignalInput struct {
@@ -403,24 +479,27 @@ type DocumentaryShotAI struct {
 }
 
 type DocumentaryChapterOutlineAI struct {
-	ChapterNumber   int      `json:"chapterNumber"`
-	Title           string   `json:"title"`
-	StartSeconds    int      `json:"startSeconds"`
-	EndSeconds      int      `json:"endSeconds"`
-	NarrativeArc    string   `json:"narrativeArc"`
-	SpatialMotif    string   `json:"spatialMotif"`
-	KeyFacts        []string `json:"keyFacts"`
-	TargetShotCount int      `json:"targetShotCount"`
+	ChapterNumber     int      `json:"chapterNumber"`
+	Title             string   `json:"title"`
+	StartSeconds      int      `json:"startSeconds"`
+	EndSeconds        int      `json:"endSeconds"`
+	NarrativeArc      string   `json:"narrativeArc"`
+	SpatialMotif      string   `json:"spatialMotif"`
+	StrategyExecution string   `json:"strategyExecution"`
+	KeyFacts          []string `json:"keyFacts"`
+	TargetShotCount   int      `json:"targetShotCount"`
 }
 
 type DocumentaryOutlineAI struct {
-	DetectedField   string                        `json:"detectedField"`
-	CentralQuestion string                        `json:"centralQuestion"`
-	OpeningHook     string                        `json:"openingHook"`
-	RecurringMotif  string                        `json:"recurringMotif"`
-	LedgerPositive  []string                      `json:"ledgerPositive"`
-	LedgerCritical  []string                      `json:"ledgerCritical"`
-	Chapters        []DocumentaryChapterOutlineAI `json:"chapters"`
+	DetectedField    string                        `json:"detectedField"`
+	OpeningArchetype string                        `json:"openingArchetype"`
+	UnderdogAngle    string                        `json:"underdogAngle"`
+	CentralQuestion  string                        `json:"centralQuestion"`
+	OpeningHook      string                        `json:"openingHook"`
+	RecurringMotif   string                        `json:"recurringMotif"`
+	LedgerPositive   []string                      `json:"ledgerPositive"`
+	LedgerCritical   []string                      `json:"ledgerCritical"`
+	Chapters         []DocumentaryChapterOutlineAI `json:"chapters"`
 }
 
 type DocumentaryChapterAI struct {
@@ -432,11 +511,14 @@ type DocumentaryChapterAI struct {
 }
 
 type DocumentaryScriptAI struct {
-	DetectedField   string                 `json:"detectedField"`
-	CentralQuestion string                 `json:"centralQuestion"`
-	OpeningHook     string                 `json:"openingHook"`
-	RecurringMotif  string                 `json:"recurringMotif"`
-	Chapters        []DocumentaryChapterAI `json:"chapters"`
+	DetectedField    string                 `json:"detectedField"`
+	OpeningArchetype string                 `json:"openingArchetype"`
+	UnderdogAngle    string                 `json:"underdogAngle"`
+	ModelUsed        string                 `json:"modelUsed"`
+	CentralQuestion  string                 `json:"centralQuestion"`
+	OpeningHook      string                 `json:"openingHook"`
+	RecurringMotif   string                 `json:"recurringMotif"`
+	Chapters         []DocumentaryChapterAI `json:"chapters"`
 }
 
 type ScriptActAI struct {
@@ -474,13 +556,15 @@ func formatClockMMSS(sec int) string {
 }
 
 type CompetitivePositioningBriefAI struct {
-	WinningHooks            []string `json:"winningHooks"`
-	WhatsWorking            []string `json:"whatsWorking"`
-	AudienceQuestions       []string `json:"audienceQuestions"`
-	CompetitorBlindSpots    []string `json:"competitorBlindSpots"`
-	OutperformanceStrategy  string   `json:"outperformanceStrategy"`
-	RecommendedColdOpenEdge string   `json:"recommendedColdOpenEdge"`
-	FormatAdvantage         string   `json:"formatAdvantage"`
+	WinningHooks             []string `json:"winningHooks"`
+	WhatsWorking             []string `json:"whatsWorking"`
+	AudienceQuestions        []string `json:"audienceQuestions"`
+	CompetitorBlindSpots     []string `json:"competitorBlindSpots"`
+	OutperformanceStrategy   string   `json:"outperformanceStrategy"`
+	RecommendedColdOpenEdge  string   `json:"recommendedColdOpenEdge"`
+	UnderdogOpeningArchetype string   `json:"underdogOpeningArchetype"`
+	FormatAdvantage          string   `json:"formatAdvantage"`
+	ScriptExecutionPlan      []string `json:"scriptExecutionPlan"`
 }
 
 // AnalyzeCompetitorsForPositioningWithGemini executes Stage 0 pre-script competitive analysis:
@@ -490,6 +574,7 @@ func AnalyzeCompetitorsForPositioningWithGemini(
 	ctx context.Context,
 	personName string,
 	biographicalField string,
+	subjectContext string,
 	competitorDataJSON string,
 	targetDurationMinutes int,
 ) (*CompetitivePositioningBriefAI, error) {
@@ -500,33 +585,42 @@ func AnalyzeCompetitorsForPositioningWithGemini(
 	sysPrompt := `You are TrendScout Studio's Lead YouTube Competitive Strategist & Documentary Showrunner.
 Before writing a documentary script, you audit the highest-performing competing YouTube videos (including their real transcripts, view velocity, channel-relative outlier multipliers, video durations/formats, and top viewer comments).
 YOUR GOAL:
-1. Identify EXACTLY what hooks, narrative framing, emotional tension, or curiosity gaps made the highest-outlier videos outperform their channel average.
-2. Mine top viewer comments for unanswered questions, recurring debates, skeptical counter-arguments, and emotional resonance points.
-3. Expose competitor blind spots (e.g., Shorts-only coverage, surface-level highlight reels, missing formative context, unattributed claims, skipped turning points or post-breakthrough reckoning).
-4. Formulate a concrete, original OUTPERFORMANCE POSITIONING STRATEGY for a prestige, source-grounded ` + fmt.Sprintf("%d-minute", targetDurationMinutes) + ` documentary paced at <=7 seconds per visual cut.
-CRITICAL: NEVER recommend plagiarizing or copying competitor lines. Focus on structural superiority, deeper verified journalism, sharper Cold Open tension, and answering what viewers are actively asking.`
+1. Identify EXACTLY what hooks, narrative framing, emotional tension, or curiosity gaps made the highest-outlier videos outperform their channel average—citing the actual competitor titles, channel names, and transcript opening lines.
+2. Mine top viewer comments for specific unanswered questions, recurring debates, skeptical counter-arguments, and emotional resonance points (ignore generic fan praise like "GOAT" or emojis).
+3. Expose concrete competitor blind spots specific to THIS subject (e.g., exact biographical turning points, disputes, or setbacks that the studied Shorts/clips skipped).
+4. Formulate a concrete, subject-specific OUTPERFORMANCE POSITIONING STRATEGY and a chapter-by-chapter SCRIPT EXECUTION PLAN for a prestige, source-grounded ` + fmt.Sprintf("%d-minute", targetDurationMinutes) + ` documentary paced at <=7 seconds per visual cut.
+CRITICAL: NEVER write generic boilerplate that could apply to any other person. Every field MUST name specific facts about ` + personName + ` and specific competing videos/comments from the JSON payload. NEVER recommend plagiarizing competitor lines.`
 
 	userPrompt := fmt.Sprintf(`Subject: %s
 Biographical Field: %s
 Target Documentary Runtime: %d minutes
+
+Subject Biographical Context:
+%s
 
 Competing YouTube Videos (Metrics, Transcripts & Top Viewer Comments):
 %s
 
 Return strictly valid JSON matching:
 {
-  "winningHooks": ["Specific hook pattern driving high CTR/retention in competing outlier videos"],
-  "whatsWorking": ["Specific narrative/structural/emotional element driving engagement and outlier views"],
+  "winningHooks": ["Specific hook pattern citing an exact studied video title/channel or transcript opening"],
+  "whatsWorking": ["Specific narrative/structural/emotional element driving outlier views on THIS subject"],
   "audienceQuestions": ["Specific unanswered question or debate raised by viewers in comments"],
-  "competitorBlindSpots": ["Specific gap or weakness across existing YouTube videos we can exploit"],
-  "outperformanceStrategy": "2-3 concrete sentences detailing how our documentary will outperform all competing videos in retention, authority, and depth.",
-  "recommendedColdOpenEdge": "1-2 sentences prescribing how our 0:00-1:30 Cold Open beats existing hooks.",
-  "formatAdvantage": "1-2 sentences explaining how our long-form <=7s visual pacing exploits the format gap (e.g., vs Shorts or quick clips)."
-}`, personName, biographicalField, targetDurationMinutes, competitorDataJSON)
+  "competitorBlindSpots": ["Specific biographical fact, setback, or arc gap missing from the studied videos"],
+  "outperformanceStrategy": "2-3 concrete sentences naming the top competing video/channel and detailing how our documentary on %s will outperform them in retention, authority, and depth.",
+  "recommendedColdOpenEdge": "1-2 sentences prescribing the exact 0:00-1:30 subversive Underdog Cold Open scene for %s that deliberately contrasts what competitor transcripts opened with.",
+  "underdogOpeningArchetype": "Choose ONE best-fit archetype: The Hidden Low Point | The Viral Myth vs. The Record | The Unlikely Room | The Unanswered Question | The Quiet Turning Point",
+  "formatAdvantage": "1-2 sentences citing the actual durations/formats of the studied videos vs our %d-minute <=7s/cut film.",
+  "scriptExecutionPlan": [
+    "Ch 0 (Cold Open): Exact opening contrast & hook execution",
+    "Ch 2-3 (Breakthrough & Contested Ground): Exact competitor blind spot & viewer debate resolved",
+    "Ch 5-6 (Reckoning & Ledger): Exact unanswered audience question closed on the record"
+  ]
+}`, personName, biographicalField, targetDurationMinutes, subjectContext, competitorDataJSON, personName, personName, targetDurationMinutes)
 
 	var out CompetitivePositioningBriefAI
 	if err := CallGeminiJSONWithOptions(ctx, sysPrompt, userPrompt, &out, GeminiCallOptions{
-		Temperature:     0.3,
+		Temperature:     0.35,
 		MaxOutputTokens: 2048,
 		Timeout:         25 * time.Second,
 	}); err != nil {
@@ -579,22 +673,27 @@ func GenerateDocumentaryScriptWithGemini(
 		fieldDirective = fmt.Sprintf("Treat this biography explicitly within the domain/field of '%s', tailoring every chapter title, institutional artifact, spatial motif, and visual shot to that field.", biographicalField)
 	}
 
-	// STAGE 1: Master Documentary Architecture & 7-Chapter Outline
-	outlineSys := `You are the Lead Investigative Documentary Showrunner & Screenwriter for a prestige biographical film series (in the measured, austere, rigorously attributed style of Frontline / The New Yorker Films / prestige archival cinema).
-Design a 7-chapter biographical documentary blueprint (Chapters 0 through 6) dynamically adapted to the subject's actual biographical domain.
+	// STAGE 1: Master Underdog Documentary Architecture & 7-Chapter Outline (Aligned to Stage 0 Transcripts & Comments)
+	outlineSys := `You are the Lead Underdog Documentary Showrunner & Investigative Screenwriter for a prestige biographical YouTube documentary channel (measured, cinematic, source-grounded journalism—never generic or templated).
+Design a 7-chapter UNDERDOG biographical documentary blueprint (Chapters 0 through 6) shaped directly by BOTH the subject's verified underdog dossier AND the Stage 0 YouTube Competitor Transcript & Comment Study.
+
 EDITORIAL RULES:
-1. ZERO melodrama, ZERO hype adjectives, ZERO clickbait clichés. Use restrained, forensic, declarative documentary journalism.
-2. STRICT ATTRIBUTION: Distinguish verified public records, court/institutional filings, reported accounts, allegations, and subject denials. Never invent dates, verdicts, quotes, or facts not present in the dossier.
-3. ARCHITECTURAL ARC:
-   - Chapter 0 · Cold Open: Begin in media res inside a decisive public room/moment of reckoning or turning point, pull back to humble origins, pose one central investigative thesis question, and pivot ("We begin small. Very small.").
-   - Chapter 1 · Early Origins & Craft: Birth, family/community context, formative obsession/skill, early education or apprenticeship, and the first small room where their capability emerged.
-   - Chapter 2 · The First Breakthrough: The early creation, debut, invention, campaign, or breakthrough—how it worked, how rapidly it spread, and the first friction or controversy.
-   - Chapter 3 · Contested Ground / The Record: Disputes, rivals, institutional pushback, critics, competing versions of events, and how public myth differs from the documented record ("This film uses only what can be attributed.").
-   - Chapter 4 · Scale & Expansion: Rapid ascent, institutional growth, global reach, major milestones, honors or philanthropic/civic initiatives—and the structural tensions of scale.
-   - Chapter 5 · Reckoning & Accountability: The longest, deepest chronological investigative chapter examining trials, controversies, setbacks, regulatory/institutional scrutiny, shifting alliances, and measurable consequences.
-   - Chapter 6 · The Open Question: Return visually to the origin space and opening room. Lay out both sides of the factual ledger side-by-side. Close on an unresolved, resonant question ("The record is not closed.").
-4. ` + fieldDirective + `
-5. Style focus: ` + style
+1. ZERO COOKIE-CUTTER OPENINGS: NEVER reuse generic boilerplate openings like "Inside a silent arena tunnel, every camera turned toward..." or forced taglines like "We begin small. Very small." Every documentary MUST open with a fresh, subject-specific scene chosen specifically to SUBVERT what competing YouTube transcripts already overplayed.
+2. ZERO melodrama, ZERO clickbait hype. Write with tense, austere, cinematic journalistic precision.
+3. STRICT ATTRIBUTION: Base every date, name, setback, quote, and turning point on the verified dossier. Distinguish verified records, reported accounts, allegations, and denials. Never invent fake facts.
+4. UNDERDOG 7-CHAPTER STORYTELLING ARC (ALIGNED TO COMPETITOR BLIND SPOTS):
+   - Chapter 0 · Subversive Cold Open: Execute the Stage 0 COLD OPEN EDGE & UNDERDOG OPENING ARCHETYPE (e.g., open on the documented lowest point/injury/rejection, OR dismantle a viral clip myth from competitor transcripts, OR open on the exact unanswered viewer debate from comments). Plant one unforgettable central underdog question in the first 60 seconds.
+   - Chapter 1 · The Unlikely Starting Line: Concrete geographic, financial, physical, or institutional disadvantages competitors skip—grounding the human world before anyone knew their name.
+   - Chapter 2 · The Wall: Documented rejections, losses, injuries, skeptics, or systemic barriers that 60-second highlight reels erase.
+   - Chapter 3 · The Crucible: The specific craft, obsession, sacrifice, or contested turning point—directly addressing the top viewer debates and competitor blind spots from Stage 0.
+   - Chapter 4 · Against the Odds: The defining breakthrough or upset—re-framed so it lands with 10x emotional weight because the audience now understands what was truly at stake.
+   - Chapter 5 · The Cost of Winning: The longest, deepest investigative chapter examining post-breakthrough pressure, rivals, controversies, institutional scrutiny, and unresolved accountability that short clips ignore.
+   - Chapter 6 · The Underdog Verdict: Return visually to the film's opening motif, directly answer the viewer debate planted in Chapter 0, weigh both sides of the verified ledger, and close on a resonant final thought.
+5. COMPETITIVE OUTPERFORMANCE EXECUTION (MANDATORY):
+   - Chapter 0 MUST directly execute the Stage 0 COLD OPEN EDGE without copying competitor lines.
+   - Chapters 2, 3, 4, and 5 MUST explicitly assign and answer the Stage 0 VIEWER QUESTIONS / DEBATES and fill the COMPETITOR BLIND SPOTS inside each chapter's "strategyExecution" and "narrativeArc".
+6. ` + fieldDirective + `
+7. Style focus: ` + style
 
 	outlineUser := fmt.Sprintf(`Subject: %s
 Known Category: %s
@@ -608,7 +707,7 @@ Exact Chapter Time Windows:
 Subject Assessment & Context:
 %s
 
-Pre-Script YouTube Competitive Positioning Brief (Outperform these competing videos without copying them — resolve audience questions & exploit blind spots):
+Pre-Script YouTube Competitive Positioning Brief (Outperform these competing videos without copying them — subvert overplayed openings, resolve viewer debates & exploit blind spots):
 %s
 
 Verified Biography Dossier:
@@ -619,20 +718,23 @@ Verified Claims & Sources:
 
 Return strictly valid JSON matching:
 {
-  "detectedField": "Specific Biographical Domain (e.g., Technology & Platform Governance, Molecular Biology & Medicine, Olympic Athletics, etc.)",
-  "centralQuestion": "One sharp, unresolved documentary thesis question",
-  "openingHook": "2-3 austere cold-open narration sentences setting the defining public room",
-  "recurringMotif": "The recurring spatial/room motif tracking scale from origin room to public arena",
+  "detectedField": "Specific Biographical Domain (e.g., Olympic Track & Field, World Championship Chess, Technology & Platform Governance, etc.)",
+  "openingArchetype": "The Hidden Low Point | The Viral Myth vs. The Record | The Unlikely Room | The Unanswered Question | The Quiet Turning Point",
+  "underdogAngle": "1-2 crisp sentences explaining the unique editorial viewpoint separating this film from existing YouTube videos on this subject",
+  "centralQuestion": "One sharp, unresolved underdog question informed by viewer comments and the subject's real arc",
+  "openingHook": "2-3 original, subject-specific cold-open narration sentences (NEVER generic arena/room boilerplate)",
+  "recurringMotif": "The concrete physical motif authentic to THIS specific person's craft and journey",
   "ledgerPositive": ["Concrete documented achievement/contribution 1", "Concrete documented achievement 2"],
   "ledgerCritical": ["Concrete documented controversy/cost/unresolved tension 1", "Concrete documented challenge 2"],
   "chapters": [
     {
       "chapterNumber": 0,
-      "title": "Cold Open",
+      "title": "Specific compelling chapter title (never generic boilerplate)",
       "startSeconds": 0,
       "endSeconds": 90,
       "narrativeArc": "Specific factual progression for this chapter",
-      "spatialMotif": "The physical room/setting defining this chapter",
+      "spatialMotif": "The authentic physical setting for THIS person in this chapter",
+      "strategyExecution": "Exact Stage 0 competitive edge, viewer question, or competitor blind spot this chapter visibly executes",
       "keyFacts": ["Specific verified fact/date/name 1", "Specific verified fact 2"],
       "targetShotCount": 14
     }
@@ -640,11 +742,13 @@ Return strictly valid JSON matching:
 }`, personName, category, country, projectTitle, targetDurationMinutes, totalSeconds, windowSpec.String(), assessmentSummary, competitiveBriefText, biography, claimsText)
 
 	var outline DocumentaryOutlineAI
-	if err := CallGeminiJSONWithOptions(ctx, outlineSys, outlineUser, &outline, GeminiCallOptions{
-		Temperature:     0.3,
+	cfg := GetAIConfig(ctx)
+	usedModel, err := callGeminiWithConfig(ctx, cfg, outlineSys, outlineUser, &outline, GeminiCallOptions{
+		Temperature:     0.4,
 		MaxOutputTokens: 4096,
 		Timeout:         30 * time.Second,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("stage 1 outline failed: %w", err)
 	}
 	if len(outline.Chapters) == 0 {
@@ -653,6 +757,7 @@ Return strictly valid JSON matching:
 
 	// Normalize chapter windows so all 7 chapters strictly match the target duration budget
 	chaptersOut := make([]DocumentaryChapterAI, len(outline.Chapters))
+	chapterErrs := make([]error, len(outline.Chapters))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 4)
 
@@ -668,7 +773,8 @@ MANDATORY STYLE, COMPLEXITY & PACING RULES:
    - Interleave tactile cutaway shots (Macro details, Close-ups of hands/documents/tools/doors/screens, High-angle or Low-angle architectural angles) between primary establishing shots so no image ever holds longer than 7 seconds.
    - Include 1 to 3 deliberate breathing/atmosphere shots per chapter where narration is "" and audioCue is e.g. "Silence" or "Ambient room sound" (4–7 seconds each) at emotional transitions or chapter endings.
 3. CONCRETE, FILMABLE VISUALS: Every visual description MUST begin with a concrete camera scale ("Wide shot of...", "Medium shot of...", "Close-up of...", "Macro shot of...", "Over-the-shoulder shot of...", "Low-angle shot of...", "High-angle wide shot of...", "Aerial shot of...") describing real physical spaces, lighting, archival documents, instruments, or environments authentic to the subject's biographical field. NEVER write vague abstractions like "visual metaphor of success".
-4. VOLUME: Generate enough shots to completely fill the chapter's exact duration in seconds (sum of durationSeconds ~= endSeconds - startSeconds).`
+4. VOLUME: Generate enough shots to completely fill the chapter's exact duration in seconds (sum of durationSeconds ~= endSeconds - startSeconds).
+5. VISIBLE STAGE 0 EXECUTION: Every chapter MUST visibly deliver its assigned "Chapter Competitive Execution Target" in the spoken NARRATOR (V.O.) lines—executing the Cold Open edge in Chapter 0, answering mined audience questions, and exposing the exact verified details competing YouTube clips skip—always in restrained, source-attributed documentary prose.`
 
 	for i, ch := range outline.Chapters {
 		chIdx := i
@@ -707,8 +813,9 @@ Time Window: %s – %s (Total Duration: %d seconds)
 REQUIRED SHOT COUNT: Exactly %d to %d shots (every shot MUST be 4 to 7 seconds; NEVER exceed 7 seconds!)
 Chapter Narrative Arc: %s
 Chapter Spatial Motif: %s
+CHAPTER COMPETITIVE EXECUTION TARGET (MUST BE VISIBLY DELIVERED IN NARRATION): %s
 Allocated Verified Facts for This Chapter: %s
-YouTube Competitive Positioning Directive: %s
+Overall YouTube Competitive Positioning Brief: %s
 
 Full Subject Biography & Claims Reference (use ONLY real details grounded here):
 %s
@@ -740,44 +847,53 @@ Return strictly valid JSON matching:
 				personName, outline.DetectedField, outline.CentralQuestion, outline.RecurringMotif, style,
 				chPlan.ChapterNumber, chPlan.Title, formatClockMMSS(chPlan.StartSeconds), formatClockMMSS(chPlan.EndSeconds), chDur,
 				targetShots, targetShots+4,
-				chPlan.NarrativeArc, chPlan.SpatialMotif, string(factsJSON), competitiveBriefText,
+				chPlan.NarrativeArc, chPlan.SpatialMotif, chPlan.StrategyExecution, string(factsJSON), competitiveBriefText,
 				biography, claimsText,
 				chPlan.ChapterNumber, chPlan.Title, chPlan.StartSeconds, chPlan.EndSeconds)
 
 			var built DocumentaryChapterAI
-			if err := CallGeminiJSONWithOptions(chCtx, chapterSys, chUser, &built, GeminiCallOptions{
+			errCh := CallGeminiJSONWithOptions(chCtx, chapterSys, chUser, &built, GeminiCallOptions{
 				Temperature:     0.35,
 				MaxOutputTokens: 8192,
 				Timeout:         42 * time.Second,
-			}); err == nil && len(built.Shots) > 0 {
-				built.ChapterNumber = chPlan.ChapterNumber
-				if strings.TrimSpace(built.Title) == "" {
-					built.Title = chPlan.Title
-				}
-				built.StartSeconds = chPlan.StartSeconds
-				built.EndSeconds = chPlan.EndSeconds
-				chaptersOut[chIdx] = built
+			})
+			if errCh != nil {
+				chapterErrs[chIdx] = fmt.Errorf("chapter %d (%s): %w", chPlan.ChapterNumber, chPlan.Title, errCh)
+				return
 			}
+			if len(built.Shots) == 0 {
+				chapterErrs[chIdx] = fmt.Errorf("chapter %d (%s) returned zero shots", chPlan.ChapterNumber, chPlan.Title)
+				return
+			}
+			built.ChapterNumber = chPlan.ChapterNumber
+			if strings.TrimSpace(built.Title) == "" {
+				built.Title = chPlan.Title
+			}
+			built.StartSeconds = chPlan.StartSeconds
+			built.EndSeconds = chPlan.EndSeconds
+			chaptersOut[chIdx] = built
 		}()
 	}
 	wg.Wait()
 
-	populated := 0
-	for _, c := range chaptersOut {
-		if len(c.Shots) > 0 {
-			populated++
+	for i, c := range chaptersOut {
+		if chapterErrs[i] != nil {
+			return nil, fmt.Errorf("stage 2 chapter generation failed: %w", chapterErrs[i])
 		}
-	}
-	if populated == 0 {
-		return nil, fmt.Errorf("stage 2 chapter generation returned zero shots")
+		if len(c.Shots) == 0 {
+			return nil, fmt.Errorf("stage 2 chapter %d returned zero shots", i)
+		}
 	}
 
 	return &DocumentaryScriptAI{
-		DetectedField:   outline.DetectedField,
-		CentralQuestion: outline.CentralQuestion,
-		OpeningHook:     outline.OpeningHook,
-		RecurringMotif:  outline.RecurringMotif,
-		Chapters:        chaptersOut,
+		DetectedField:    outline.DetectedField,
+		OpeningArchetype: outline.OpeningArchetype,
+		UnderdogAngle:    outline.UnderdogAngle,
+		ModelUsed:        usedModel,
+		CentralQuestion:  outline.CentralQuestion,
+		OpeningHook:      outline.OpeningHook,
+		RecurringMotif:   outline.RecurringMotif,
+		Chapters:         chaptersOut,
 	}, nil
 }
 

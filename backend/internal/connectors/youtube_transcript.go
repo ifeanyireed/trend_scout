@@ -1,6 +1,7 @@
 package connectors
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -108,7 +109,7 @@ func ParseYouTubeCaptionXML(rawXML string) string {
 		return strings.TrimSpace(strings.Join(parts, " "))
 	}
 
-	// Fallback for srv3/p-tag XML format
+	// Fallback for srv3/timedtext format="3" (<timedtext format="3"><body><p><s>...</s></p></body></timedtext>)
 	type pNode struct {
 		Value string `xml:",innerxml"`
 	}
@@ -119,7 +120,8 @@ func ParseYouTubeCaptionXML(rawXML string) string {
 	if err := xml.Unmarshal([]byte(rawXML), &bdoc); err == nil && len(bdoc.Ps) > 0 {
 		var parts []string
 		for _, n := range bdoc.Ps {
-			txt := html.UnescapeString(ytHTMLTagRe.ReplaceAllString(n.Value, " "))
+			rawInner := ytHTMLTagRe.ReplaceAllString(n.Value, "")
+			txt := html.UnescapeString(rawInner)
 			txt = strings.Join(strings.Fields(txt), " ")
 			if txt != "" {
 				parts = append(parts, txt)
@@ -131,65 +133,130 @@ func ParseYouTubeCaptionXML(rawXML string) string {
 	return ""
 }
 
-// FetchYouTubeTranscript retrieves a YouTube video's public caption track (0 API quota units)
-// and returns a clean, bounded transcript excerpt (up to ~3,200 chars covering hook + core arc).
-func FetchYouTubeTranscript(ctx context.Context, videoID string) (string, error) {
-	if len(videoID) != 11 {
-		return "", fmt.Errorf("invalid youtube video id: %q", videoID)
-	}
-	tCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+type ytCaptionTrack struct {
+	BaseURL      string `json:"baseUrl"`
+	LanguageCode string `json:"languageCode"`
+	Kind         string `json:"kind"`
+}
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	watchURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s&hl=en", videoID)
-	req, err := http.NewRequestWithContext(tCtx, http.MethodGet, watchURL, nil)
-	if err != nil {
-		return "", err
+func selectBestCaptionTrackURL(tracks []ytCaptionTrack) string {
+	if len(tracks) == 0 {
+		return ""
 	}
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	bestURL := ""
+	for _, tr := range tracks {
+		if tr.BaseURL == "" {
+			continue
+		}
+		lang := strings.ToLower(tr.LanguageCode)
+		if strings.HasPrefix(lang, "en") && tr.Kind != "asr" {
+			return strings.ReplaceAll(tr.BaseURL, `\u0026`, "&")
+		}
+		if strings.HasPrefix(lang, "en") && bestURL == "" {
+			bestURL = strings.ReplaceAll(tr.BaseURL, `\u0026`, "&")
+		}
+	}
+	if bestURL != "" {
+		return bestURL
+	}
+	return strings.ReplaceAll(tracks[0].BaseURL, `\u0026`, "&")
+}
+
+// fetchCaptionTrackURLViaInnerTube queries YouTube's public InnerTube ANDROID player endpoint
+// (0 Data API quota units), which reliably returns working timedtext caption URLs even when watch HTML returns 0 bytes.
+func fetchCaptionTrackURLViaInnerTube(ctx context.Context, client *http.Client, videoID string) string {
+	payload := fmt.Sprintf(`{"context":{"client":{"clientName":"ANDROID","clientVersion":"20.10.38","hl":"en"}},"videoId":"%s"}`, videoID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://www.youtube.com/youtubei/v1/player?prettyPrint=false", bytes.NewBufferString(payload))
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "com.google.android.youtube/20.10.38 (Linux; U; Android 14)")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return ""
 	}
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 2_000_000))
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1_500_000))
 	resp.Body.Close()
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("youtube watch status %d", resp.StatusCode)
+	if err != nil || resp.StatusCode != 200 {
+		return ""
 	}
 
-	captionURL := ExtractCaptionTrackURL(string(bodyBytes))
+	var parsed struct {
+		Captions struct {
+			PlayerCaptionsTracklistRenderer struct {
+				CaptionTracks []ytCaptionTrack `json:"captionTracks"`
+			} `json:"playerCaptionsTracklistRenderer"`
+		} `json:"captions"`
+	}
+	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
+		return ""
+	}
+	return selectBestCaptionTrackURL(parsed.Captions.PlayerCaptionsTracklistRenderer.CaptionTracks)
+}
+
+func fetchAndParseCaptionURL(ctx context.Context, client *http.Client, captionURL string) string {
 	if captionURL == "" {
-		return "", fmt.Errorf("no caption tracks found for %s", videoID)
+		return ""
 	}
-
-	cReq, err := http.NewRequestWithContext(tCtx, http.MethodGet, captionURL, nil)
+	cReq, err := http.NewRequestWithContext(ctx, http.MethodGet, captionURL, nil)
 	if err != nil {
-		return "", err
+		return ""
 	}
 	cReq.Header.Set("User-Agent", UserAgent)
 	cResp, err := client.Do(cReq)
 	if err != nil {
-		return "", err
+		return ""
 	}
-	capBytes, err := io.ReadAll(io.LimitReader(cResp.Body, 600_000))
+	capBytes, err := io.ReadAll(io.LimitReader(cResp.Body, 750_000))
 	cResp.Body.Close()
-	if err != nil {
-		return "", err
+	if err != nil || cResp.StatusCode != 200 || len(capBytes) == 0 {
+		return ""
 	}
-	if cResp.StatusCode != 200 {
-		return "", fmt.Errorf("caption fetch status %d", cResp.StatusCode)
+	return ParseYouTubeCaptionXML(string(capBytes))
+}
+
+// FetchYouTubeTranscript retrieves a YouTube video's public caption track (0 API quota units)
+// using InnerTube ANDROID primary + Watch HTML fallback, returning a bounded excerpt (~3,200 chars).
+func FetchYouTubeTranscript(ctx context.Context, videoID string) (string, error) {
+	if len(videoID) != 11 {
+		return "", fmt.Errorf("invalid youtube video id: %q", videoID)
+	}
+	tCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
+	defer cancel()
+
+	client := &http.Client{Timeout: 6 * time.Second}
+
+	// Primary: InnerTube ANDROID player endpoint (reliably returns non-empty timedtext XML)
+	fullText := ""
+	if innerURL := fetchCaptionTrackURLViaInnerTube(tCtx, client, videoID); innerURL != "" {
+		fullText = fetchAndParseCaptionURL(tCtx, client, innerURL)
 	}
 
-	fullText := ParseYouTubeCaptionXML(string(capBytes))
+	// Fallback: Public watch page HTML captionTracks
 	if fullText == "" {
-		return "", fmt.Errorf("empty transcript parsed for %s", videoID)
+		watchURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s&hl=en", videoID)
+		req, err := http.NewRequestWithContext(tCtx, http.MethodGet, watchURL, nil)
+		if err == nil {
+			req.Header.Set("User-Agent", UserAgent)
+			req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+			if resp, errDo := client.Do(req); errDo == nil {
+				bodyBytes, errRead := io.ReadAll(io.LimitReader(resp.Body, 2_000_000))
+				resp.Body.Close()
+				if errRead == nil && resp.StatusCode == 200 {
+					if captionURL := ExtractCaptionTrackURL(string(bodyBytes)); captionURL != "" {
+						fullText = fetchAndParseCaptionURL(tCtx, client, captionURL)
+					}
+				}
+			}
+		}
 	}
-	// Preserve opening hook + middle + closing beat cleanly within ~3,200 chars
+
+	if fullText == "" {
+		return "", fmt.Errorf("no public caption transcript available for %s", videoID)
+	}
+	// Preserve opening hook + closing beat cleanly within ~3,200 chars
 	if len(fullText) > 3200 {
 		opening := fullText[:2000]
 		closing := fullText[len(fullText)-1000:]
@@ -278,7 +345,7 @@ func AnalyzeCompetitorVideosConcurrently(ctx context.Context, videos []VideoMetr
 	target := videos[:maxVideos]
 	results := make([]CompetitorVideoStudy, len(target))
 
-	studyCtx, cancel := context.WithTimeout(ctx, 9*time.Second)
+	studyCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup

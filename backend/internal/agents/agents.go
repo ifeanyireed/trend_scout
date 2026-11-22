@@ -191,9 +191,12 @@ func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCyc
 	rawSignals = append(rawSignals, redditCands...)
 	result.CandidatesFetched = len(rawSignals) + len(wikiCands)
 
-	// Step 2: Use Gemini AI (single batched call) to extract verified human subjects from live headlines
+	// Step 2: Use Gemini AI (single batched call) to extract verified human subjects from live headlines (no fallback)
+	if !ai.HasGeminiKey(ctx) {
+		return result, fmt.Errorf("Gemini AI required for Discovery Scan: no Gemini API key configured in Settings")
+	}
 	var curated []connectors.DiscoveredCandidate
-	if len(rawSignals) > 0 && ai.HasGeminiKey(ctx) {
+	if len(rawSignals) > 0 {
 		limit := len(rawSignals)
 		if limit > 30 {
 			limit = 30
@@ -208,43 +211,33 @@ func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCyc
 				Publisher: rawSignals[i].Publisher,
 			})
 		}
-		gemCtx, cancelGem := context.WithTimeout(ctx, 6*time.Second)
+		gemCtx, cancelGem := context.WithTimeout(ctx, 10*time.Second)
 		extracted, errGem := ai.ExtractCandidatesWithGemini(gemCtx, inputs)
 		cancelGem()
-		if errGem == nil && len(extracted) > 0 {
-			result.UsedGemini = true
-			for idx, ext := range extracted {
-				if idx < 0 || idx >= limit {
-					continue
-				}
-				c := rawSignals[idx]
-				c.PersonName = strings.TrimSpace(ext.PersonName)
-				c.Aliases = ext.Aliases
-				if strings.TrimSpace(ext.Category) != "" {
-					c.Category = strings.TrimSpace(ext.Category)
-				}
-				if strings.TrimSpace(ext.Country) != "" {
-					c.Country = strings.TrimSpace(ext.Country)
-				}
-				if strings.TrimSpace(ext.EventTitle) != "" {
-					c.EventTitle = strings.TrimSpace(ext.EventTitle)
-				}
-				if strings.TrimSpace(ext.Achievement) != "" {
-					c.Achievement = strings.TrimSpace(ext.Achievement)
-				}
-				curated = append(curated, c)
-			}
+		if errGem != nil {
+			return result, fmt.Errorf("Gemini AI candidate extraction failed: %s", sanitizeAIErrorForUI(errGem))
 		}
-	}
-
-	// Fallback if Gemini was unavailable or returned zero items: keep regex-extracted raw signals (will be Wikipedia-verified below)
-	if !result.UsedGemini {
-		for _, c := range rawSignals {
-			name := strings.TrimSpace(c.PersonName)
-			words := strings.Fields(name)
-			if len(words) >= 2 && len(words) <= 3 {
-				curated = append(curated, c)
+		result.UsedGemini = true
+		for idx, ext := range extracted {
+			if idx < 0 || idx >= limit {
+				continue
 			}
+			c := rawSignals[idx]
+			c.PersonName = strings.TrimSpace(ext.PersonName)
+			c.Aliases = ext.Aliases
+			if strings.TrimSpace(ext.Category) != "" {
+				c.Category = strings.TrimSpace(ext.Category)
+			}
+			if strings.TrimSpace(ext.Country) != "" {
+				c.Country = strings.TrimSpace(ext.Country)
+			}
+			if strings.TrimSpace(ext.EventTitle) != "" {
+				c.EventTitle = strings.TrimSpace(ext.EventTitle)
+			}
+			if strings.TrimSpace(ext.Achievement) != "" {
+				c.Achievement = strings.TrimSpace(ext.Achievement)
+			}
+			curated = append(curated, c)
 		}
 	}
 
@@ -958,79 +951,81 @@ func runUnderdogAssessmentWithOptions(ctx context.Context, personID string, disc
 		"saturation_risk":          satRationale,
 	}
 
-	// Dynamic Google Gemini AI Assessment if API key is active & healthy (bounded timeout)
-	if allowGemini && ai.HasGeminiKey(ctx) {
-		gemCtx, cancelGem := context.WithTimeout(ctx, 10*time.Second)
-		eval, errAI := ai.EvaluateUnderdogWithGemini(gemCtx, cand.PersonName, cand.Headline, cand.Achievement, cand.WikiExtract, ytViews, ytVPH, redditUps, redditComments)
-		cancelGem()
-		if errAI == nil && eval != nil {
-			if eval.Classification != "" {
-				classification = eval.Classification
-			}
-			if eval.OriginsSummary != "" {
-				origins = eval.OriginsSummary
-			}
-			if eval.EarlyAmbitions != "" {
-				ambitions = eval.EarlyAmbitions
-			}
-			if eval.Disadvantages != "" {
-				disadvantages = eval.Disadvantages
-			}
-			if eval.RejectionsAndFailures != "" {
-				rejections = eval.RejectionsAndFailures
-			}
-			if eval.Obstacles != "" {
-				obstacles = eval.Obstacles
-			}
-			if eval.TurningPoints != "" {
-				turningPoints = eval.TurningPoints
-			}
-			if eval.CareerProgression != "" {
-				progression = eval.CareerProgression
-			}
-			if eval.RecentBreakthrough != "" {
-				breakthrough = eval.RecentBreakthrough
-			}
-			if eval.ContradictionsReport != "" {
-				contraReport = eval.ContradictionsReport
-			}
-			if eval.ResearchGapsReport != "" {
-				gapsReport = eval.ResearchGapsReport
-			}
-			if eval.AudienceInterestReport != "" {
-				audienceReport = eval.AudienceInterestReport
-			}
-			if eval.OverallScore > 0 {
-				overallScore = eval.OverallScore
-			}
-			if eval.UnderdogStrength > 0 {
-				uStrength = eval.UnderdogStrength
-			}
-			if eval.TransformationScore > 0 {
-				transScore = eval.TransformationScore
-			}
-			if eval.AchievementSignificance > 0 {
-				achSig = eval.AchievementSignificance
-			}
-			if eval.AudienceMomentum > 0 {
-				audMom = eval.AudienceMomentum
-			}
-			if eval.DocumentaryPotential > 0 {
-				docPot = eval.DocumentaryPotential
-			}
-			if eval.TimelinessScore > 0 {
-				timeScore = eval.TimelinessScore
-			}
-			if eval.EvidenceConfidence > 0 {
-				evConf = eval.EvidenceConfidence
-			}
-			if eval.SaturationRisk > 0 {
-				satRisk = eval.SaturationRisk
-			}
-			if len(eval.ScoreRationale) > 0 {
-				rationale = eval.ScoreRationale
-			}
-		}
+	// Strictly Google Gemini AI Assessment (no local fallback)
+	if !allowGemini || !ai.HasGeminiKey(ctx) {
+		return fmt.Errorf("Gemini AI required for Underdog Assessment: no Gemini API key configured in Settings")
+	}
+	gemCtx, cancelGem := context.WithTimeout(ctx, 12*time.Second)
+	eval, errAI := ai.EvaluateUnderdogWithGemini(gemCtx, cand.PersonName, cand.Headline, cand.Achievement, cand.WikiExtract, ytViews, ytVPH, redditUps, redditComments)
+	cancelGem()
+	if errAI != nil || eval == nil {
+		return fmt.Errorf("Gemini AI Underdog Assessment failed: %s", sanitizeAIErrorForUI(errAI))
+	}
+	if eval.Classification != "" {
+		classification = eval.Classification
+	}
+	if eval.OriginsSummary != "" {
+		origins = eval.OriginsSummary
+	}
+	if eval.EarlyAmbitions != "" {
+		ambitions = eval.EarlyAmbitions
+	}
+	if eval.Disadvantages != "" {
+		disadvantages = eval.Disadvantages
+	}
+	if eval.RejectionsAndFailures != "" {
+		rejections = eval.RejectionsAndFailures
+	}
+	if eval.Obstacles != "" {
+		obstacles = eval.Obstacles
+	}
+	if eval.TurningPoints != "" {
+		turningPoints = eval.TurningPoints
+	}
+	if eval.CareerProgression != "" {
+		progression = eval.CareerProgression
+	}
+	if eval.RecentBreakthrough != "" {
+		breakthrough = eval.RecentBreakthrough
+	}
+	if eval.ContradictionsReport != "" {
+		contraReport = eval.ContradictionsReport
+	}
+	if eval.ResearchGapsReport != "" {
+		gapsReport = eval.ResearchGapsReport
+	}
+	if eval.AudienceInterestReport != "" {
+		audienceReport = eval.AudienceInterestReport
+	}
+	if eval.OverallScore > 0 {
+		overallScore = eval.OverallScore
+	}
+	if eval.UnderdogStrength > 0 {
+		uStrength = eval.UnderdogStrength
+	}
+	if eval.TransformationScore > 0 {
+		transScore = eval.TransformationScore
+	}
+	if eval.AchievementSignificance > 0 {
+		achSig = eval.AchievementSignificance
+	}
+	if eval.AudienceMomentum > 0 {
+		audMom = eval.AudienceMomentum
+	}
+	if eval.DocumentaryPotential > 0 {
+		docPot = eval.DocumentaryPotential
+	}
+	if eval.TimelinessScore > 0 {
+		timeScore = eval.TimelinessScore
+	}
+	if eval.EvidenceConfidence > 0 {
+		evConf = eval.EvidenceConfidence
+	}
+	if eval.SaturationRisk > 0 {
+		satRisk = eval.SaturationRisk
+	}
+	if len(eval.ScoreRationale) > 0 {
+		rationale = eval.ScoreRationale
 	}
 
 	_, err := db.DB.ExecContext(ctx, `
@@ -1206,6 +1201,18 @@ func RunDeepResearchAndVerificationWithProfile(ctx context.Context, personID str
 	}, nil
 }
 
+type ScriptGenerationMeta struct {
+	UsedGemini       bool   `json:"usedGemini"`
+	Engine           string `json:"engine"`
+	Model            string `json:"model,omitempty"`
+	AIError          string `json:"aiError,omitempty"`
+	OpeningArchetype string `json:"openingArchetype,omitempty"`
+	UnderdogAngle    string `json:"underdogAngle,omitempty"`
+	TranscriptsUsed  int    `json:"transcriptsUsed"`
+	CommentsUsed     int    `json:"commentsUsed"`
+	GeneratedAt      string `json:"generatedAt"`
+}
+
 // 7. DOCUMENTARY WRITER AGENT (Dynamic Biographical 7-Chapter Realigned Script, <= 7s per visual cut)
 func GenerateDocumentaryScript(ctx context.Context, projectID string, targetDurationMinutes int, style string) (string, error) {
 	return GenerateDocumentaryScriptWithOptions(ctx, projectID, targetDurationMinutes, style, "auto")
@@ -1312,10 +1319,16 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 
 	domain := ResolveBiographicalDomain(category, bio, summary, headline, biographicalField)
 
-	// STAGE 0: Pre-Script YouTube Competitor Transcription, Comment Mining & Outperformance Positioning Brief
-	_, competitiveBriefPrompt := BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDurationMinutes)
+	if !ai.HasGeminiKey(ctx) {
+		return "", fmt.Errorf("Gemini AI required for documentary script generation: no Gemini API key configured in Settings")
+	}
 
-	openingHook, sections := BuildDeterministicDocumentaryScript(bioInput, domain, targetDurationMinutes)
+	// STAGE 0: Pre-Script YouTube Competitor Transcription, Comment Mining & Outperformance Positioning Brief (AI required)
+	competitiveBrief, competitiveBriefPrompt, errBrief := BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDurationMinutes)
+	if errBrief != nil {
+		return "", errBrief
+	}
+	bioInput.CompetitiveBrief = competitiveBrief
 
 	getClaim := func(idx int) ScriptClaimRef {
 		if len(claims) == 0 {
@@ -1324,81 +1337,95 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 		return claims[idx%len(claims)]
 	}
 
-	// Dynamic 2-stage Google Gemini AI Generation (informed by Stage 0 YouTube Competitive Positioning Brief)
-	usedGemini := false
-	if ai.HasGeminiKey(ctx) {
-		var claimsBuilder strings.Builder
-		for idx, c := range claims {
-			claimsBuilder.WriteString(fmt.Sprintf("[%d | %s | %s] %s (Source: %s)\n", idx+1, c.Status, c.Category, c.Text, c.URL))
-		}
-		assessmentSummary := fmt.Sprintf("Origins: %s\nEarly Ambitions: %s\nDisadvantages: %s\nRejections/Setbacks: %s\nObstacles: %s\nTurning Points: %s\nProgression: %s\nBreakthrough: %s",
-			origins, earlyAmbitions, disadvantages, rejections, obstacles, turningPoints, careerProgression, breakthrough)
-
-		aiDoc, errAI := ai.GenerateDocumentaryScriptWithGemini(
-			ctx, personName, category, country, projectTitle, targetDurationMinutes,
-			style, biographicalField, bio, claimsBuilder.String(), assessmentSummary, competitiveBriefPrompt,
-		)
-		if errAI == nil && aiDoc != nil && len(aiDoc.Chapters) > 0 {
-			usedGemini = true
-			if strings.TrimSpace(aiDoc.OpeningHook) != "" {
-				openingHook = strings.TrimSpace(aiDoc.OpeningHook)
-			}
-			detectedField := domain.Label
-			if strings.TrimSpace(aiDoc.DetectedField) != "" {
-				detectedField = strings.TrimSpace(aiDoc.DetectedField)
-			}
-			centralQ := domain.CentralQuestion
-			if strings.TrimSpace(aiDoc.CentralQuestion) != "" {
-				centralQ = strings.TrimSpace(aiDoc.CentralQuestion)
-			}
-
-			var mergedSections []ScriptSection
-			for idx, ch := range aiDoc.Chapters {
-				if len(ch.Shots) == 0 && idx < len(sections) {
-					// Preserve deterministic fallback for any chapter that failed transiently
-					fallback := sections[idx]
-					fallback.DomainField = detectedField
-					fallback.CentralQuestion = centralQ
-					mergedSections = append(mergedSections, fallback)
-					continue
-				}
-				var shots []ScriptShot
-				chTitle := strings.TrimSpace(ch.Title)
-				if chTitle == "" && idx < len(domain.ChapterTitles) {
-					chTitle = domain.ChapterTitles[idx]
-				}
-				if !strings.Contains(chTitle, "·") {
-					chTitle = fmt.Sprintf("%d · %s", ch.ChapterNumber, chTitle)
-				}
-				for _, s := range ch.Shots {
-					shots = append(shots, ScriptShot{
-						Visual:          s.Visual,
-						Narration:       s.Narration,
-						AudioCue:        s.AudioCue,
-						DurationSeconds: s.DurationSeconds,
-						LocationRef:     s.LocationRef,
-						ChapterNumber:   ch.ChapterNumber,
-						ChapterTitle:    chTitle,
-					})
-				}
-				claim := getClaim(idx)
-				mergedSections = append(mergedSections, ScriptSection{
-					ActNumber:       idx + 1,
-					ChapterNumber:   ch.ChapterNumber,
-					Title:           chTitle,
-					DomainField:     detectedField,
-					CentralQuestion: centralQ,
-					Shots:           shots,
-					ClaimID:         claim.ClaimID,
-					SourceID:        claim.SourceID,
-					CitationURL:     claim.URL,
-				})
-			}
-			if len(mergedSections) > 0 {
-				sections = EnforceMaxSevenSecondPacing(mergedSections, domain, bioInput, targetDurationMinutes)
-			}
-		}
+	// STAGE 1 & STAGE 2: Strictly Live Google Gemini AI Generation (zero local fallback)
+	var claimsBuilder strings.Builder
+	for idx, c := range claims {
+		claimsBuilder.WriteString(fmt.Sprintf("[%d | %s | %s] %s (Source: %s)\n", idx+1, c.Status, c.Category, c.Text, c.URL))
 	}
+	assessmentSummary := fmt.Sprintf("Origins: %s\nEarly Ambitions: %s\nDisadvantages: %s\nRejections/Setbacks: %s\nObstacles: %s\nTurning Points: %s\nProgression: %s\nBreakthrough: %s",
+		origins, earlyAmbitions, disadvantages, rejections, obstacles, turningPoints, careerProgression, breakthrough)
+
+	aiDoc, errAI := ai.GenerateDocumentaryScriptWithGemini(
+		ctx, personName, category, country, projectTitle, targetDurationMinutes,
+		style, biographicalField, bio, claimsBuilder.String(), assessmentSummary, competitiveBriefPrompt,
+	)
+	if errAI != nil || aiDoc == nil || len(aiDoc.Chapters) == 0 {
+		return "", fmt.Errorf("Gemini AI documentary script generation failed: %s", sanitizeAIErrorForUI(errAI))
+	}
+
+	genMeta := ScriptGenerationMeta{
+		UsedGemini:       true,
+		Engine:           "Gemini Live AI (2-Stage Underdog Engine)",
+		Model:            aiDoc.ModelUsed,
+		OpeningArchetype: strings.TrimSpace(aiDoc.OpeningArchetype),
+		UnderdogAngle:    strings.TrimSpace(aiDoc.UnderdogAngle),
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	if competitiveBrief != nil {
+		if genMeta.OpeningArchetype == "" {
+			genMeta.OpeningArchetype = competitiveBrief.UnderdogOpeningArchetype
+		}
+		if genMeta.UnderdogAngle == "" {
+			genMeta.UnderdogAngle = competitiveBrief.OutperformanceStrategy
+		}
+		genMeta.TranscriptsUsed = competitiveBrief.TranscribedVideoCount
+		genMeta.CommentsUsed = competitiveBrief.CommentsAnalyzedCount
+	}
+
+	openingHook := strings.TrimSpace(aiDoc.OpeningHook)
+	detectedField := domain.Label
+	if strings.TrimSpace(aiDoc.DetectedField) != "" {
+		detectedField = strings.TrimSpace(aiDoc.DetectedField)
+	}
+	centralQ := domain.CentralQuestion
+	if strings.TrimSpace(aiDoc.CentralQuestion) != "" {
+		centralQ = strings.TrimSpace(aiDoc.CentralQuestion)
+	}
+
+	var mergedSections []ScriptSection
+	for idx, ch := range aiDoc.Chapters {
+		if len(ch.Shots) == 0 {
+			return "", fmt.Errorf("Gemini AI returned zero shots for chapter %d (%s)", ch.ChapterNumber, ch.Title)
+		}
+		var shots []ScriptShot
+		chTitle := strings.TrimSpace(ch.Title)
+		if chTitle == "" && idx < len(domain.ChapterTitles) {
+			chTitle = domain.ChapterTitles[idx]
+		}
+		if !strings.Contains(chTitle, "·") {
+			chTitle = fmt.Sprintf("%d · %s", ch.ChapterNumber, chTitle)
+		}
+		for _, s := range ch.Shots {
+			shots = append(shots, ScriptShot{
+				Visual:          s.Visual,
+				Narration:       s.Narration,
+				AudioCue:        s.AudioCue,
+				DurationSeconds: s.DurationSeconds,
+				LocationRef:     s.LocationRef,
+				ChapterNumber:   ch.ChapterNumber,
+				ChapterTitle:    chTitle,
+			})
+		}
+		claim := getClaim(idx)
+		mergedSections = append(mergedSections, ScriptSection{
+			ActNumber:       idx + 1,
+			ChapterNumber:   ch.ChapterNumber,
+			Title:           chTitle,
+			DomainField:     detectedField,
+			CentralQuestion: centralQ,
+			Shots:           shots,
+			ClaimID:         claim.ClaimID,
+			SourceID:        claim.SourceID,
+			CitationURL:     claim.URL,
+		})
+	}
+	sections := EnforceMaxSevenSecondPacing(mergedSections, domain, bioInput, targetDurationMinutes)
+	if openingHook == "" && len(sections) > 0 && len(sections[0].Shots) > 0 {
+		openingHook = sections[0].Shots[0].Narration
+	}
+
+	genMetaBytes, _ := json.Marshal(genMeta)
+	genMetaJSON := string(genMetaBytes)
 
 	fullText := FormatRealignedScript(sections)
 	spokenText := ExtractSpokenNarration(fullText)
@@ -1422,9 +1449,9 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 		scriptID = "scr-" + uuid.NewString()[:8]
 		currentVer = 1
 		_, err = db.DB.ExecContext(ctx, `
-			INSERT INTO documentary_scripts (id, project_id, current_version, title, opening_hook, full_narration_text, word_count, estimated_duration_seconds, status)
-			VALUES ($1, $2, 1, $3, $4, $5, $6, $7, 'ready_for_review')
-		`, scriptID, projectID, projectTitle, openingHook, fullText, wordCount, estSeconds)
+			INSERT INTO documentary_scripts (id, project_id, current_version, title, opening_hook, full_narration_text, word_count, estimated_duration_seconds, status, generation_meta_json)
+			VALUES ($1, $2, 1, $3, $4, $5, $6, $7, 'ready_for_review', $8)
+		`, scriptID, projectID, projectTitle, openingHook, fullText, wordCount, estSeconds, genMetaJSON)
 		if err != nil {
 			return "", err
 		}
@@ -1432,9 +1459,9 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 		currentVer++
 		_, _ = db.DB.ExecContext(ctx, `
 			UPDATE documentary_scripts
-			SET current_version = $2, opening_hook = $3, full_narration_text = $4, word_count = $5, estimated_duration_seconds = $6, updated_at = NOW()
+			SET current_version = $2, opening_hook = $3, full_narration_text = $4, word_count = $5, estimated_duration_seconds = $6, generation_meta_json = $7, updated_at = NOW()
 			WHERE id = $1
-		`, scriptID, currentVer, openingHook, fullText, wordCount, estSeconds)
+		`, scriptID, currentVer, openingHook, fullText, wordCount, estSeconds, genMetaJSON)
 	}
 
 	// Sync project target duration and <=7s pacing interval
@@ -1444,9 +1471,9 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 		WHERE id = $1
 	`, projectID, targetDurationMinutes)
 
-	engineTag := "Domain-Dynamic Biographical Engine"
-	if usedGemini {
-		engineTag = "Gemini 2-Stage Investigative Engine"
+	engineTag := "Gemini 2-Stage Underdog Engine"
+	if genMeta.Model != "" {
+		engineTag = fmt.Sprintf("Gemini %s Underdog Engine", genMeta.Model)
 	}
 	detectedLabel := domain.Label
 	if len(sections) > 0 && sections[0].DomainField != "" {
@@ -1921,7 +1948,9 @@ func ExportProductionPackage(ctx context.Context, projectID string, assembleVide
 	var fullNarration string
 	err = db.DB.QueryRowContext(ctx, `SELECT full_narration_text FROM documentary_scripts WHERE project_id = $1`, projectID).Scan(&fullNarration)
 	if err != nil || fullNarration == "" {
-		_, _ = GenerateDocumentaryScript(ctx, projectID, 20, "Cinematic Investigative Storytelling")
+		if _, errScr := GenerateDocumentaryScript(ctx, projectID, 20, "Investigative Archival Documentary"); errScr != nil {
+			return nil, errScr
+		}
 		_ = db.DB.QueryRowContext(ctx, `SELECT full_narration_text FROM documentary_scripts WHERE project_id = $1`, projectID).Scan(&fullNarration)
 	}
 

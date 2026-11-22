@@ -1,10 +1,10 @@
 package agents
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
-
-	"trendscout-backend/internal/connectors"
 )
 
 func TestDynamicBiographicalDomainDetection(t *testing.T) {
@@ -71,162 +71,13 @@ func TestDynamicBiographicalDomainDetection(t *testing.T) {
 	}
 }
 
-func TestDocumentaryScriptVolumeStyleAndSevenSecondRule(t *testing.T) {
-	subjects := []struct {
-		name     string
-		duration int
-		input    BiographyInput
-		override string
-		minShots int
-	}{
-		{
-			name:     "20-Minute Tech Biography",
-			duration: 20,
-			minShots: 165,
-			input: BiographyInput{
-				PersonName:        "Elena Vance",
-				Category:          "Technology & Innovation",
-				Country:           "United States",
-				ProjectTitle:      "The Protocol: Inside Elena Vance's Network",
-				Summary:           "Elena Vance built an open messaging protocol in a university basement that scaled to 900 million users before triggering international privacy inquiries.",
-				Biography:         "Elena Vance was born in 1986 in Seattle. Her parents were public school teachers. In 2005, while studying computer science, she wrote a distributed encryption router over a single weekend. In 2008, two former collaborators sued over intellectual property ownership; the case settled out of court in 2010 under sealed terms. By 2016, her platform surpassed 500 million daily users and she pledged 80 percent of her shares to an independent digital literacy foundation. In 2024, she testified before parliamentary committees over algorithmic safety and youth privacy allegations, which the company denied.",
-				Headline:          "Elena Vance faces parliamentary testimony after two decades of platform growth",
-				EventTitle:        "2024 Parliamentary Digital Safety Inquiry",
-				Origins:           "Born in Seattle to two teachers, she learned systems programming on surplus university terminals.",
-				EarlyAmbitions:    "She set out to build resilient peer-to-peer communication software independent of telecom carriers.",
-				Disadvantages:     "Operating with zero institutional venture backing during the first three years.",
-				Rejections:        "Early security audits and major carriers dismissed the protocol as unscalable.",
-				Obstacles:         "Competing lawsuits, regulatory subpoenas across three jurisdictions, and internal governance disputes.",
-				TurningPoints:     "A 2011 open-source release triggered global adoption across journalists and students.",
-				CareerProgression: "Expanded from a three-person apartment team to a multinational software platform.",
-				Breakthrough:      "Reached 900 million active users while navigating landmark privacy litigation.",
-				Claims: []ScriptClaimRef{
-					{ClaimID: "c1", SourceID: "s1", Category: "Origins", Text: "Born in 1986 in Seattle and studied computer science.", URL: "https://en.wikipedia.org/wiki/Example", Status: "Verified"},
-					{ClaimID: "c2", SourceID: "s1", Category: "Dispute", Text: "Former collaborators sued in 2008 and settled under sealed terms in 2010.", URL: "https://en.wikipedia.org/wiki/Example", Status: "Reported"},
-				},
-			},
-		},
-		{
-			name:     "15-Minute Science Biography",
-			duration: 15,
-			minShots: 120,
-			input: BiographyInput{
-				PersonName:   "Dr. Katalin Solis",
-				Category:     "Science & Medicine",
-				Country:      "Hungary",
-				ProjectTitle: "The Sequence: Dr. Katalin Solis",
-				Summary:      "Biochemist whose decades of rejected grant proposals culminated in a transformative therapeutic breakthrough.",
-				Biography:    "Born in a small town in 1958, Dr. Katalin Solis studied biochemistry at university and emigrated with her family in 1985. For fourteen years, major funding committees rejected her RNA stability proposals and she was demoted from a tenure-track post. In 2005, she co-authored a landmark paper modifying synthetic nucleosides that initially received muted attention. Fifteen years later, global clinical trials validated the mechanism at unprecedented speed, earning international prizes alongside intense patent disputes.",
-				Breakthrough: "Nucleoside-modified RNA breakthrough deployed globally across clinical medicine.",
-			},
-		},
-		{
-			name:     "25-Minute Politics & Law Biography",
-			duration: 25,
-			minShots: 205,
-			input: BiographyInput{
-				PersonName:   "Marcus Okafor",
-				Category:     "Politics, Law & Governance",
-				Country:      "Nigeria",
-				ProjectTitle: "The Ledger of Office: Marcus Okafor",
-				Summary:      "Former municipal prosecutor who challenged entrenched procurement networks before facing a national inquiry.",
-				Biography:    "Marcus Okafor grew up in Enugu and studied constitutional law. As a young public prosecutor in 2004, he filed landmark anti-corruption indictments against regional contractors. Elected governor in 2015, he overhauled state digital audits and public schools. In 2023, opposition lawmakers initiated an oversight tribunal examining emergency infrastructure contracts, allegations Okafor publicly disputed in sworn testimony.",
-				Breakthrough: "Led sweeping public procurement transparency reforms across state ministries.",
-			},
-		},
-	}
-
-	for _, tc := range subjects {
-		t.Run(tc.name, func(t *testing.T) {
-			dom := ResolveBiographicalDomain(tc.input.Category, tc.input.Biography, tc.input.Summary, tc.input.Headline, tc.override)
-			hook, sections := BuildDeterministicDocumentaryScript(tc.input, dom, tc.duration)
-
-			if strings.TrimSpace(hook) == "" {
-				t.Fatalf("expected non-empty opening hook")
-			}
-			if len(sections) != 7 {
-				t.Fatalf("expected exactly 7 chapters (0..6), got %d", len(sections))
-			}
-
-			totalShots := 0
-			var prevStart float64 = -1
-			for chIdx, sec := range sections {
-				if sec.ChapterNumber != chIdx {
-					t.Fatalf("chapter %d has wrong chapterNumber %d", chIdx, sec.ChapterNumber)
-				}
-				if len(sec.Shots) == 0 {
-					t.Fatalf("chapter %d has zero shots", chIdx)
-				}
-				for _, sh := range sec.Shots {
-					totalShots++
-					if sh.DurationSeconds > MaxShotDurationSeconds {
-						t.Fatalf("shot %d (%s) violated <= 7s rule: duration=%.1fs (narration=%q)", sh.ShotNumber, sh.Timestamp, sh.DurationSeconds, sh.Narration)
-					}
-					if sh.DurationSeconds < MinShotDurationSeconds {
-						t.Fatalf("shot %d (%s) below min duration 3s: duration=%.1fs", sh.ShotNumber, sh.Timestamp, sh.DurationSeconds)
-					}
-					if prevStart >= 0 && (sh.StartSeconds-prevStart) > MaxShotDurationSeconds+0.01 {
-						t.Fatalf("timestamp gap exceeded 7s between %.1fs and %.1fs at shot %d", prevStart, sh.StartSeconds, sh.ShotNumber)
-					}
-					prevStart = sh.StartSeconds
-					if sh.Narration != "" {
-						wCount := len(strings.Fields(sh.Narration))
-						if wCount > MaxWordsPerShot+1 {
-							t.Fatalf("shot %d narration too long for <=7s speech (%d words): %q", sh.ShotNumber, wCount, sh.Narration)
-						}
-					}
-					if strings.TrimSpace(sh.Visual) == "" {
-						t.Fatalf("shot %d missing visual description", sh.ShotNumber)
-					}
-				}
-			}
-
-			if totalShots < tc.minShots {
-				t.Fatalf("expected >= %d shots for %d-min documentary, got %d", tc.minShots, tc.duration, totalShots)
-			}
-
-			rendered := FormatRealignedScript(sections)
-			if !strings.Contains(rendered, "0 · Cold Open (0:00 – ") {
-				t.Fatalf("formatted script missing Cold Open chapter header")
-			}
-			if strings.Contains(rendered, "IN-BETWEEN") {
-				t.Fatalf("formatted script must NOT contain [NEW IN-BETWEEN] editorial markers")
-			}
-			if !strings.Contains(rendered, "VISUAL:") {
-				t.Fatalf("formatted script missing VISUAL: cues")
-			}
-			if !strings.Contains(rendered, "NARRATOR (V.O.):") {
-				t.Fatalf("formatted script missing NARRATOR (V.O.): lines")
-			}
-
-			spoken := ExtractSpokenNarration(rendered)
-			if strings.Contains(spoken, "VISUAL:") {
-				t.Fatalf("ExtractSpokenNarration leaked visual stage directions")
-			}
-			if len(strings.Fields(spoken)) < 600 {
-				t.Fatalf("expected rich documentary monologue volume, got only %d spoken words", len(strings.Fields(spoken)))
-			}
-
-			// Round-trip parse verification: parsed shots also obey <= 7.0s strictly
-			reparsed := ParseRealignedScriptShots(rendered, dom)
-			if len(reparsed) < tc.minShots {
-				t.Fatalf("expected >= %d reparsed shots, got %d", tc.minShots, len(reparsed))
-			}
-			for _, rs := range reparsed {
-				if rs.DurationSeconds > MaxShotDurationSeconds {
-					t.Fatalf("reparsed shot %d exceeded 7s: %.1fs", rs.ShotNumber, rs.DurationSeconds)
-				}
-			}
-		})
-	}
-}
-
 func TestSplitLongNarrationEnforcesSevenSecondCutaways(t *testing.T) {
 	dom := domainScienceMedicine()
 	input := BiographyInput{
 		PersonName: "Dr. Ada Sterling",
 		Category:   "Science & Medicine",
-		Summary:    "Physicist.",
+		Summary:    "Physicist whose laboratory breakthrough survived fourteen years of skepticism.",
+		Biography:  "In October 2020, after fourteen years of clinical skepticism, three independent review committees confirmed her diagnostic method reduced errors by 84 percent across 42 hospitals.",
 	}
 	longSentence := "In October 2020, after fourteen years of clinical skepticism, three independent review committees confirmed that Dr. Ada Sterling's laboratory method reduced diagnostic error rates by eighty-four percent across forty-two regional hospitals while triggering an immediate international patent dispute."
 
@@ -250,10 +101,18 @@ func TestSplitLongNarrationEnforcesSevenSecondCutaways(t *testing.T) {
 		t.Fatalf("expected pacing enforcer to split and fill cold open chapter, got %d shots", len(enforced[0].Shots))
 	}
 	distinctVisuals := map[string]bool{}
+	var prevStart float64 = -1
 	for _, sh := range enforced[0].Shots {
 		if sh.DurationSeconds > MaxShotDurationSeconds {
 			t.Fatalf("enforcer left shot exceeding 7s: %.1fs", sh.DurationSeconds)
 		}
+		if sh.DurationSeconds < MinShotDurationSeconds {
+			t.Fatalf("enforcer left shot under 3s: %.1fs", sh.DurationSeconds)
+		}
+		if prevStart >= 0 && (sh.StartSeconds-prevStart) > MaxShotDurationSeconds+0.01 {
+			t.Fatalf("timestamp gap exceeded 7s between %.1fs and %.1fs", prevStart, sh.StartSeconds)
+		}
+		prevStart = sh.StartSeconds
 		distinctVisuals[sh.Visual] = true
 		if sh.Narration != "" && len(strings.Fields(sh.Narration)) > MaxWordsPerShot+1 {
 			t.Fatalf("enforcer left narration too long for 7s: %d words (%q)", len(strings.Fields(sh.Narration)), sh.Narration)
@@ -262,75 +121,114 @@ func TestSplitLongNarrationEnforcesSevenSecondCutaways(t *testing.T) {
 	if len(distinctVisuals) < 3 {
 		t.Fatalf("expected distinct fresh visuals when splitting long speech, got only %d", len(distinctVisuals))
 	}
+
+	rendered := FormatRealignedScript(enforced)
+	if strings.Contains(rendered, "IN-BETWEEN") {
+		t.Fatalf("formatted script must NOT contain [NEW IN-BETWEEN] editorial markers")
+	}
+	spoken := ExtractSpokenNarration(rendered)
+	if strings.Contains(spoken, "VISUAL:") {
+		t.Fatalf("ExtractSpokenNarration leaked visual stage directions")
+	}
+	reparsed := ParseRealignedScriptShots(rendered, dom)
+	if len(reparsed) < 10 {
+		t.Fatalf("expected >= 10 reparsed shots, got %d", len(reparsed))
+	}
+	for _, rs := range reparsed {
+		if rs.DurationSeconds > MaxShotDurationSeconds {
+			t.Fatalf("reparsed shot %d exceeded 7s: %.1fs", rs.ShotNumber, rs.DurationSeconds)
+		}
+	}
 }
 
-func TestVideoPackagingDescriptionTagsAndHashtags(t *testing.T) {
-	dom := domainTechInnovation()
-	seo := BuildDeterministicVideoPackaging(
-		"Elena Vance",
-		dom,
-		"United States",
-		"Elena Vance faces parliamentary testimony after two decades of platform growth",
-		"Built an encrypted network used by 900 million people before international privacy hearings.",
-		"Traces Elena Vance from a university basement to multinational platform governance.",
-		"",
-		20,
-	)
-
-	if !strings.Contains(seo.VideoDescription, "Chapters:") || !strings.Contains(seo.VideoDescription, "0:00 Cold Open") {
-		t.Fatalf("expected Chapters timestamps in video description, got:\n%s", seo.VideoDescription)
+func TestVideoPackagingTagAndHashtagNormalization(t *testing.T) {
+	rawTags := []string{
+		"#Elena Vance", "elena vance", "Elena Vance documentary", "underdog documentary",
+		"encrypted messaging history", "parliamentary testimony", "tech founder biography",
+		"true story documentary", "real life underdog", "platform governance",
+		"silicon valley investigation", "full biography film", "investigative journalism",
 	}
-	if len(seo.Tags) < 12 {
-		t.Fatalf("expected >= 12 high-performing SEO tags, got %d", len(seo.Tags))
+	tags := NormalizeTags(rawTags, 480)
+	if len(tags) < 10 {
+		t.Fatalf("expected deduplicated tags, got %d", len(tags))
 	}
-	if seo.TagsCharCount > 500 {
-		t.Fatalf("expected total tag characters <= 500 for YouTube limit, got %d", seo.TagsCharCount)
+	if TagsTotalChars(tags) > 480 {
+		t.Fatalf("expected total tag characters <= 480, got %d", TagsTotalChars(tags))
 	}
-	for _, tag := range seo.Tags {
+	for _, tag := range tags {
 		if strings.HasPrefix(tag, "#") {
 			t.Fatalf("SEO tag should not start with #: %q", tag)
 		}
 	}
-	if len(seo.Hashtags) < 6 {
-		t.Fatalf("expected >= 6 hashtags, got %d", len(seo.Hashtags))
+
+	hashtags := NormalizeHashtags([]string{"elena vance", "#ElenaVance", "Underdog Story!", "documentary", "True Story"}, 12)
+	if len(hashtags) != 4 {
+		t.Fatalf("expected 4 unique normalized hashtags, got %v", hashtags)
 	}
-	for _, h := range seo.Hashtags {
+	for _, h := range hashtags {
 		if !strings.HasPrefix(h, "#") || strings.Contains(h, " ") {
 			t.Fatalf("invalid hashtag format: %q", h)
 		}
 	}
 }
 
-func TestCompetitiveBriefSynthesisAndPromptFormatting(t *testing.T) {
-	dom := domainSportsCompetition()
-	studies := []connectors.CompetitorVideoStudy{
-		{
-			VideoID:             "41vUn1McRjE",
-			Title:               "59 Seconds With Neeraj Chopra #shorts",
-			ChannelName:         "Curly Tales",
-			URL:                 "https://www.youtube.com/watch?v=41vUn1McRjE",
-			Views:               13_806_175,
-			ViewsPerHour:        435,
-			ChannelMultiplier:   41.5,
-			EngagementRate:      6.21,
-			VideoFormat:         "Short (<60s)",
-			DurationSeconds:     59,
-			TranscriptExcerpt:   "Growing up in Panipat nobody thought javelin would change everything.",
-			TranscriptAvailable: true,
-			TopComments:         []string{"[1400 likes] Someone needs to make a full documentary on his injury comeback!"},
-		},
+func TestCompetitiveBriefPromptFormatting(t *testing.T) {
+	brief := &CompetitivePositioningBrief{
+		AnalyzedVideoCount:       3,
+		TranscribedVideoCount:    2,
+		CommentsAnalyzedCount:    24,
+		OutperformanceStrategy:   "Beat Curly Tales' 59-second clip by opening on the 2019 elbow surgery.",
+		RecommendedColdOpenEdge:  "Open inside the 2019 rehabilitation clinic before cutting to Tokyo.",
+		UnderdogOpeningArchetype: "The Hidden Low Point",
+		FormatAdvantage:          "All 3 top clips are under 2 minutes; a 20-minute film owns search.",
+		WinningHooks:             []string{"Curly Tales 41.5x Short on Panipat roots"},
+		CompetitorBlindSpots:     []string{"Zero coverage of the 2019 surgery"},
+		AudienceQuestions:        []string{"Someone needs to make a full documentary on his injury comeback!"},
+		ScriptExecutionPlan:      []string{"Ch 0: Open on 2019 surgery", "Ch 3: Detail rehab"},
+		UsedGemini:               true,
 	}
-
-	brief := BuildDeterministicCompetitiveBrief("Neeraj Chopra", dom, studies, 20)
-	if brief.AnalyzedVideoCount != 1 || brief.TranscribedVideoCount != 1 || brief.CommentsAnalyzedCount != 1 {
-		t.Fatalf("unexpected study counters: %+v", brief)
-	}
-	if !strings.Contains(brief.FormatAdvantage, "Short") || brief.OutperformanceStrategy == "" {
-		t.Fatalf("expected format gap advantage & strategy, got %+v", brief)
-	}
-	prompt := FormatCompetitiveBriefForPrompt(&brief)
-	if !strings.Contains(prompt, "OUTPERFORMANCE STRATEGY:") || !strings.Contains(prompt, "injury comeback") {
-		t.Fatalf("formatted prompt missing strategy or viewer comment signal:\n%s", prompt)
+	prompt := FormatCompetitiveBriefForPrompt(brief)
+	for _, want := range []string{
+		"OUTPERFORMANCE STRATEGY:",
+		"COLD OPEN EDGE:",
+		"UNDERDOG OPENING ARCHETYPE: The Hidden Low Point",
+		"CHAPTER EXECUTION PLAN:",
+		"injury comeback",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("formatted prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
+func TestStrictAIRequiredNoFallbacks(t *testing.T) {
+	// Ensure zero Gemini key in env during this test
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GEMINI_API", "")
+
+	ctx := context.Background()
+	dom := domainSportsCompetition()
+
+	// 1. Stage 0 Competitor Study MUST return error when no AI key is configured
+	if _, _, err := BuildProjectCompetitiveBrief(ctx, "", "", "", "Neeraj Chopra", dom, 20); err == nil {
+		t.Fatalf("expected BuildProjectCompetitiveBrief to return error without Gemini AI key (no fallback)")
+	}
+
+	// 2. YouTube SEO Packaging MUST return error when no AI key is configured
+	if _, err := generateVideoSEOWithAI(ctx, "Neeraj Chopra", dom, "India", "Headline", "Achievement", "Bio", "0:00 Cold Open", "", 20); err == nil {
+		t.Fatalf("expected generateVideoSEOWithAI to return error without Gemini AI key (no fallback)")
+	}
+
+	// 3. Shot/Block refinement MUST return error when Gemini refiner fails (no fallback)
+	_, err := RegenerateScriptBlock(
+		"Neeraj Chopra", "Sports & Competition", "Bio", "Summary",
+		"[0:00] VISUAL: Wide shot.\nNARRATOR (V.O.): Test line.",
+		0, "Investigative",
+		func(personName, field, existingBlock, biography, tone string) (string, string, error) {
+			return "", "", fmt.Errorf("gemini api error (401): unauthorized")
+		},
+	)
+	if err == nil {
+		t.Fatalf("expected RegenerateScriptBlock to return error when AI fails (no fallback)")
+	}
+}

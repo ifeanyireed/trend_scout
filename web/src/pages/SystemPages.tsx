@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Save } from 'lucide-react';
+import { CheckCircle2, Eye, EyeOff, RefreshCw, Save, ShieldAlert, Zap } from 'lucide-react';
 import { apiFetch } from '../api/client';
 import { StageBadge } from './DiscoveryPages';
 
@@ -149,6 +149,10 @@ export const ReportsPage: React.FC = () => {
 export const SettingsPage: React.FC = () => {
   const [settings, setSettings] = useState<any>(null);
   const [saved, setSaved] = useState(false);
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [showYoutubeKey, setShowYoutubeKey] = useState(false);
+  const [testingAI, setTestingAI] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState<any>(null);
 
   useEffect(() => {
     apiFetch('/api/settings').then(setSettings);
@@ -173,6 +177,25 @@ export const SettingsPage: React.FC = () => {
     });
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
+  };
+
+  const handleTestAI = async () => {
+    setTestingAI(true);
+    setAiTestResult(null);
+    try {
+      const res = await apiFetch('/api/settings/test-ai', {
+        method: 'POST',
+        body: JSON.stringify({
+          geminiApiKey: settings.ai?.geminiApiKey || '',
+          model: settings.ai?.model || 'gemini-2.5-flash',
+        }),
+      });
+      setAiTestResult(res);
+    } catch (err: any) {
+      setAiTestResult({ connected: false, error: err?.message || 'Test request failed' });
+    } finally {
+      setTestingAI(false);
+    }
   };
 
   return (
@@ -264,20 +287,136 @@ export const SettingsPage: React.FC = () => {
         </div>
 
         <div className="nexa-card rounded-3xl p-6 space-y-4">
-          <h2 className="text-base font-black text-display text-nexa-text-primary">
-            3. AI & Scriptwriting Preferences
-          </h2>
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-black text-display text-nexa-text-primary">
+              3. AI Engine &amp; Scriptwriting Credentials
+            </h2>
+            <button
+              type="button"
+              onClick={handleTestAI}
+              disabled={testingAI}
+              className="px-3.5 py-1.5 rounded-full border border-nexa-brand/40 bg-nexa-brand/10 hover:bg-nexa-brand/20 text-nexa-brand text-[11px] font-extrabold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              {testingAI ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+              {testingAI ? 'Testing Gemini...' : 'Test Gemini Connection'}
+            </button>
+          </div>
+
+          {aiTestResult && (
+            <div
+              className={`p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 ${
+                aiTestResult.connected
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400'
+              }`}
+            >
+              {aiTestResult.connected ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+              ) : (
+                <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
+              )}
+              <div className="space-y-0.5">
+                {aiTestResult.connected ? (
+                  <>
+                    <div className="font-extrabold">
+                      Connected Live: {aiTestResult.modelUsed} via {aiTestResult.endpointType} ({aiTestResult.latencyMs}ms)
+                    </div>
+                    <div className="text-[11px] opacity-90">
+                      Real Gemini AI is active for Stage 0 Competitor Study, Underdog Scriptwriting, and SEO Packaging.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="font-extrabold">
+                      Gemini Connection Failed ({aiTestResult.endpointType || 'API Error'})
+                    </div>
+                    <div className="text-[11px] break-words">{aiTestResult.error}</div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-bold text-nexa-text-secondary mb-1">
-              Default Documentary Duration (Minutes)
+              Gemini API Key (Google AI Studio <code className="text-[11px]">AIza...</code> or Enabled Vertex Express <code className="text-[11px]">AQ...</code>)
             </label>
-            <input
-              type="number"
-              value={settings.ai?.defaultScriptMinutes ?? 20}
-              onChange={(e) => updateField('ai', 'defaultScriptMinutes', Number(e.target.value))}
-              className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary"
-            />
+            <div className="relative">
+              <input
+                type={showGeminiKey ? 'text' : 'password'}
+                value={settings.ai?.geminiApiKey ?? ''}
+                onChange={(e) => updateField('ai', 'geminiApiKey', e.target.value)}
+                placeholder="Paste AIza... (Google AI Studio) or AQ... (Vertex AI Express)"
+                className="w-full px-3.5 py-2.5 pr-10 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => setShowGeminiKey((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-nexa-text-muted hover:text-nexa-text-primary cursor-pointer"
+                title={showGeminiKey ? 'Hide key' : 'Show key'}
+              >
+                {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-nexa-text-secondary mb-1">
+                Gemini Model
+              </label>
+              <select
+                value={settings.ai?.model ?? 'gemini-2.5-flash'}
+                onChange={(e) => updateField('ai', 'model', e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary"
+              >
+                <option value="gemini-2.5-flash">gemini-2.5-flash (Recommended)</option>
+                <option value="gemini-2.5-pro">gemini-2.5-pro (Deepest Reasoning)</option>
+                <option value="gemini-2.0-flash">gemini-2.0-flash (Fast Legacy)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-nexa-text-secondary mb-1">
+                Default Documentary Duration (Min)
+              </label>
+              <input
+                type="number"
+                min={15}
+                max={25}
+                value={settings.ai?.defaultScriptMinutes ?? 20}
+                onChange={(e) => updateField('ai', 'defaultScriptMinutes', Number(e.target.value))}
+                className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-nexa-text-secondary mb-1">
+              YouTube Data API v3 Key (Optional Override)
+            </label>
+            <div className="relative">
+              <input
+                type={showYoutubeKey ? 'text' : 'password'}
+                value={settings.ai?.youtubeApiKey ?? ''}
+                onChange={(e) => updateField('ai', 'youtubeApiKey', e.target.value)}
+                placeholder="Uses server .env YOUTUBE_API_KEY if left blank"
+                className="w-full px-3.5 py-2.5 pr-10 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => setShowYoutubeKey((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-nexa-text-muted hover:text-nexa-text-primary cursor-pointer"
+                title={showYoutubeKey ? 'Hide key' : 'Show key'}
+              >
+                {showYoutubeKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-2xl bg-nexa-brand/5 border border-nexa-brand/20 text-xs text-nexa-text-secondary">
+            <strong className="text-nexa-brand">Live Gemini AI Required (Zero Fallbacks):</strong> All discovery synthesis, Stage 0 competitor analysis, documentary scriptwriting, and SEO packaging require a working Gemini API key and return an explicit error if AI fails. Click <strong>Test Gemini Connection</strong> above to verify your key.
+          </div>
+
           <div>
             <label className="block text-xs font-bold text-nexa-text-secondary mb-1">
               Narrative Style

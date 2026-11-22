@@ -813,6 +813,7 @@ export const OpportunityDetailPage: React.FC = () => {
   const [seoBusy, setSeoBusy] = useState(false);
   const [ytBusy, setYtBusy] = useState(false);
   const [reprocessing, setReprocessing] = useState(false);
+  const [aiActionError, setAiActionError] = useState('');
   const [copiedKey, setCopiedKey] = useState('');
   const [videoDescription, setVideoDescription] = useState('');
   const [tagsInput, setTagsInput] = useState('');
@@ -864,9 +865,12 @@ export const OpportunityDetailPage: React.FC = () => {
 
   const handleApproveForDocumentary = async () => {
     setBusy(true);
+    setAiActionError('');
     try {
       const res = await apiFetch(`/api/discoveries/${detail.id}/approve`, { method: 'POST', body: '{}' });
       navigate(`/production/${res.projectId}`);
+    } catch (err: any) {
+      setAiActionError(err?.message || 'Gemini AI documentary generation failed');
     } finally {
       setBusy(false);
     }
@@ -874,6 +878,7 @@ export const OpportunityDetailPage: React.FC = () => {
 
   const handleRerunScriptProcessing = async () => {
     setReprocessing(true);
+    setAiActionError('');
     try {
       const res = await apiFetch(`/api/discoveries/${detail.id}/reprocess-script`, {
         method: 'POST',
@@ -888,6 +893,8 @@ export const OpportunityDetailPage: React.FC = () => {
       } else {
         load();
       }
+    } catch (err: any) {
+      setAiActionError(err?.message || 'Gemini AI script reprocessing failed');
     } finally {
       setReprocessing(false);
     }
@@ -895,6 +902,7 @@ export const OpportunityDetailPage: React.FC = () => {
 
   const handleGenerateSEO = async () => {
     setSeoBusy(true);
+    setAiActionError('');
     try {
       const res = await apiFetch(`/api/discoveries/${detail.id}/seo/generate`, {
         method: 'POST',
@@ -904,6 +912,8 @@ export const OpportunityDetailPage: React.FC = () => {
       setTagsInput(Array.isArray(res.videoTags) ? res.videoTags.join(', ') : '');
       setHashtagsInput(Array.isArray(res.videoHashtags) ? res.videoHashtags.join(' ') : '');
       load();
+    } catch (err: any) {
+      setAiActionError(err?.message || 'Gemini AI YouTube SEO packaging failed');
     } finally {
       setSeoBusy(false);
     }
@@ -997,6 +1007,18 @@ export const OpportunityDetailPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {aiActionError && (
+        <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-500 flex items-center justify-between gap-3">
+          <span><strong>AI Required Error:</strong> {aiActionError}</span>
+          <button
+            type="button"
+            onClick={() => navigate('/settings')}
+            className="px-3.5 py-1.5 rounded-full bg-rose-500 text-white text-[11px] font-extrabold shrink-0 cursor-pointer"
+          >
+            Open AI Settings →
+          </button>
+        </div>
+      )}
       <div className="nexa-card rounded-3xl p-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
           <div className="space-y-2">

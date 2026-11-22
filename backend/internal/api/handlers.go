@@ -975,18 +975,22 @@ func RegisterRoutes(mux *http.ServeMux) {
 			}
 			scrID, err := agents.GenerateDocumentaryScriptWithOptions(ctx, projectID, req.TargetDurationMinutes, req.Style, req.BiographicalField)
 			if err != nil {
-				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				writeJSON(w, 422, map[string]string{"error": err.Error()})
 				return
 			}
 			// Keep <=7s Visual Timeline and YouTube chapter description automatically synchronized
 			segCount, _ := agents.GenerateVisualTimeline(ctx, projectID)
 			_, _ = agents.GenerateProjectVideoPackaging(ctx, projectID)
-			writeJSON(w, 200, map[string]any{"ok": true, "scriptId": scrID, "segmentCount": segCount})
+			var genMetaStr string
+			_ = db.DB.QueryRowContext(ctx, `SELECT COALESCE(generation_meta_json, '{}') FROM documentary_scripts WHERE id = $1`, scrID).Scan(&genMetaStr)
+			var genMeta map[string]any
+			_ = json.Unmarshal([]byte(genMetaStr), &genMeta)
+			writeJSON(w, 200, map[string]any{"ok": true, "scriptId": scrID, "segmentCount": segCount, "generationMeta": genMeta})
 
 		case "seo/generate":
 			seo, err := agents.GenerateProjectVideoPackaging(ctx, projectID)
 			if err != nil {
-				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				writeJSON(w, 422, map[string]string{"error": err.Error()})
 				return
 			}
 			writeJSON(w, 200, map[string]any{
@@ -1002,7 +1006,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 		case "competitive-brief/generate":
 			brief, err := agents.GenerateProjectCompetitiveBrief(ctx, projectID)
 			if err != nil {
-				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				writeJSON(w, 422, map[string]string{"error": err.Error()})
 				return
 			}
 			writeJSON(w, 200, map[string]any{
@@ -1100,12 +1104,16 @@ func RegisterRoutes(mux *http.ServeMux) {
 				WHERE dp.id = $1
 			`, projectID).Scan(&personName, &category, &bio, &summary)
 
-			updatedText := agents.RegenerateScriptBlock(
+			updatedText, err := agents.RegenerateScriptBlock(
 				personName, category, bio, summary, fullText, req.ParagraphIndex, req.Tone,
 				func(pName, field, existingBlock, biography, tone string) (string, string, error) {
 					return ai.RegenerateShotWithGemini(ctx, pName, field, existingBlock, biography, tone)
 				},
 			)
+			if err != nil {
+				writeJSON(w, 422, map[string]string{"error": err.Error()})
+				return
+			}
 			ver++
 			words := len(strings.Fields(agents.ExtractSpokenNarration(updatedText)))
 			_, _ = db.DB.ExecContext(ctx, `
@@ -1272,6 +1280,20 @@ func RegisterRoutes(mux *http.ServeMux) {
 			},
 			"weeklyTop10": top10,
 		})
+	}))
+
+	mux.HandleFunc("/api/settings/test-ai", requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var req struct {
+			GeminiAPIKey string `json:"geminiApiKey"`
+			Model        string `json:"model"`
+		}
+		_ = readJSON(r, &req)
+		res := ai.TestGeminiConnection(r.Context(), req.GeminiAPIKey, req.Model)
+		writeJSON(w, 200, res)
 	}))
 
 	mux.HandleFunc("/api/settings", requireAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -1859,11 +1881,17 @@ func approveDiscoveryForDocumentary(ctx interface {
 	}
 
 	bgCtx := context.Background()
-	_, _ = agents.GenerateDocumentaryScript(bgCtx, projID, 20, "Investigative Archival Documentary")
+	if _, errScr := agents.GenerateDocumentaryScript(bgCtx, projID, 20, "Investigative Archival Documentary"); errScr != nil {
+		// Roll back empty project shell if live Gemini AI failed (no fallback)
+		_, _ = db.DB.ExecContext(ctx, `DELETE FROM documentary_projects WHERE id = $1`, projID)
+		return "", errScr
+	}
 	_, _ = agents.GenerateCharacterReferences(bgCtx, projID)
 	_, _ = agents.GenerateVisualTimeline(bgCtx, projID)
 	_, _, _ = agents.GenerateProjectAudioAndSubtitles(bgCtx, projID)
-	_, _ = agents.GenerateProjectVideoPackaging(bgCtx, projID)
+	if _, errSEO := agents.GenerateProjectVideoPackaging(bgCtx, projID); errSEO != nil {
+		return projID, errSEO
+	}
 
 	return projID, nil
 }
@@ -1907,12 +1935,16 @@ func getProjectWorkspace(ctx interface {
 	}
 
 	// Script
-	var scrID, hook, fullText, scrStatus string
+	var scrID, hook, fullText, scrStatus, genMetaStr string
 	var curVer, words, estSec int
 	_ = db.DB.QueryRowContext(ctx, `
-		SELECT id, current_version, opening_hook, full_narration_text, word_count, estimated_duration_seconds, status
+		SELECT id, current_version, opening_hook, full_narration_text, word_count, estimated_duration_seconds, status, COALESCE(generation_meta_json, '{}')
 		FROM documentary_scripts WHERE project_id = $1
-	`, projectID).Scan(&scrID, &curVer, &hook, &fullText, &words, &estSec, &scrStatus)
+	`, projectID).Scan(&scrID, &curVer, &hook, &fullText, &words, &estSec, &scrStatus, &genMetaStr)
+	var genMeta map[string]any
+	if genMetaStr != "" && genMetaStr != "{}" {
+		_ = json.Unmarshal([]byte(genMetaStr), &genMeta)
+	}
 
 	// Script versions (and structured sections from latest version)
 	vRows, _ := db.DB.QueryContext(ctx, `
@@ -2110,6 +2142,7 @@ func getProjectWorkspace(ctx interface {
 			"centralQuestion":          centralQuestion,
 			"shotCount":                shotCount,
 			"maxShotDurationSeconds":   maxShotDur,
+			"generationMeta":           genMeta,
 			"sections":                 parsedSections,
 			"versions":                 versions,
 		},

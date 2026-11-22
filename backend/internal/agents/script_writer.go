@@ -91,6 +91,7 @@ type BiographyInput struct {
 	Breakthrough      string
 	Claims            []ScriptClaimRef
 	TimelineEntries   []string
+	CompetitiveBrief  *CompetitivePositioningBrief
 }
 
 type ScriptClaimRef struct {
@@ -1183,196 +1184,6 @@ func domainGeneralBiography() BiographicalDomainProfile {
 	return p
 }
 
-// BuildDeterministicDocumentaryScript generates a complete, domain-adaptive, full-volume 7-chapter
-// documentary script when Gemini is unavailable (or to fill any missing AI chapter), guaranteeing
-// journalistic rigor, source attribution, and strict <= 7-second visual pacing.
-func BuildDeterministicDocumentaryScript(input BiographyInput, domain BiographicalDomainProfile, targetDurationMinutes int) (string, []ScriptSection) {
-	if targetDurationMinutes < 15 || targetDurationMinutes > 25 {
-		targetDurationMinutes = 20
-	}
-	totalSeconds := targetDurationMinutes * 60
-	windows := ai.ComputeChapterTimeWindows(totalSeconds)
-
-	// Extract verified biographical sentences from every available source in the DB
-	rawFacts := collectUniqueBioSentences(input)
-	chFactBuckets := distributeFactsAcrossChapters(rawFacts, input)
-
-	name := strings.TrimSpace(input.PersonName)
-	if name == "" {
-		name = "The subject"
-	}
-	country := strings.TrimSpace(input.Country)
-	if country == "" {
-		country = "their home country"
-	}
-
-	hookLine1 := fmt.Sprintf("In %s, %s stepped into the public record.", domain.OpeningRoom, name)
-	hookLine2 := cleanShortSentence(firstNonEmpty(input.Breakthrough, input.Headline, input.Summary), 28)
-	if hookLine2 == "" {
-		hookLine2 = fmt.Sprintf("The work of %s had crossed from private ambition into public consequence.", name)
-	}
-	openingHook := hookLine1 + " " + hookLine2
-
-	sections := make([]ScriptSection, 7)
-
-	for chIdx := 0; chIdx < 7; chIdx++ {
-		w := windows[chIdx]
-		title := fmt.Sprintf("%d · %s", chIdx, domain.ChapterTitles[chIdx])
-		timeRange := fmt.Sprintf("%s – %s", formatMMSS(w[0]), formatMMSS(w[1]))
-		facts := chFactBuckets[chIdx]
-		loc := domain.ChapterLocations[chIdx]
-
-		var draftShots []ScriptShot
-		addSpoken := func(text string, primaryIdx int, cutaway bool) {
-			text = strings.TrimSpace(text)
-			if text == "" {
-				return
-			}
-			vis := pickShotVisual(domain, chIdx, primaryIdx, cutaway)
-			draftShots = append(draftShots, ScriptShot{
-				Visual:        vis,
-				Narration:     text,
-				LocationRef:   loc,
-				ChapterNumber: chIdx,
-				ChapterTitle:  title,
-			})
-		}
-		addAmbient := func(cue string, idx int, dur float64) {
-			if cue == "" {
-				cue = "Silence"
-			}
-			vis := pickShotVisual(domain, chIdx, idx, true)
-			draftShots = append(draftShots, ScriptShot{
-				Visual:          vis,
-				Narration:       "",
-				AudioCue:        cue,
-				DurationSeconds: dur,
-				LocationRef:     loc,
-				ChapterNumber:   chIdx,
-				ChapterTitle:    title,
-			})
-		}
-
-		switch chIdx {
-		case 0: // Cold Open (0:00 – 1:30)
-			addSpoken(fmt.Sprintf("Inside %s, every camera turned toward %s.", domain.OpeningRoom, name), 0, false)
-			addSpoken(hookLine2, 1, true)
-			addSpoken(fmt.Sprintf("For years, observers in %s had watched the trajectory build from a distance.", domain.Label), 2, false)
-			addAmbient(domain.AmbientCues[0], 2, 7)
-			addAmbient("Silence", 3, 6)
-			addSpoken(fmt.Sprintf("Yet years earlier, %s was working inside %s.", name, domain.OriginRoom), 3, false)
-			addSpoken("This is a film about a question.", 4, false)
-			addSpoken(domain.CentralQuestion, 4, true)
-			addSpoken("We begin small. Very small.", 5, false)
-
-		case 1: // Origins & Early Craft (1:30 – 3:30)
-			addSpoken(fmt.Sprintf("The documented record of %s begins far from national headlines, in %s.", name, country), 0, false)
-			if input.Origins != "" {
-				addSpoken(input.Origins, 1, false)
-			}
-			if input.EarlyAmbitions != "" {
-				addSpoken(input.EarlyAmbitions, 2, false)
-			}
-			for fi, f := range facts {
-				addSpoken(f, 3+fi, fi%2 == 1)
-			}
-			addSpoken(fmt.Sprintf("The setting was %s—ordinary on the surface.", domain.OriginRoom), 4, false)
-			addSpoken(fmt.Sprintf("The difference was %s, already learning to build work others could not ignore.", name), 5, true)
-
-		case 2: // The First Breakthrough (3:30 – 6:30)
-			addSpoken(fmt.Sprintf("Every defining public career starts with one early creation that outgrows its room."), 0, false)
-			if input.EventTitle != "" {
-				addSpoken(fmt.Sprintf("Before %s, %s tested methods that unsettled conventional expectations.", input.EventTitle, name), 1, false)
-			}
-			for fi, f := range facts {
-				addSpoken(f, 2+fi, fi%2 == 1)
-			}
-			addSpoken("What began as a narrow experiment drew immediate attention—and immediate friction.", 4, false)
-			addSpoken("That was the first test of the record. It would not be the last.", 5, true)
-			addAmbient(domain.AmbientCues[3], 5, 6)
-
-		case 3: // Contested Ground / Who Built It (6:30 – 9:30)
-			addSpoken(fmt.Sprintf("Success in %s rarely arrives without competing claims and institutional resistance.", domain.Label), 0, false)
-			if input.Disadvantages != "" {
-				addSpoken(fmt.Sprintf("Public profiles record the structural disadvantages %s faced early: %s", name, input.Disadvantages), 1, false)
-			}
-			if input.Rejections != "" {
-				addSpoken(fmt.Sprintf("Documented accounts describe early rejections and setbacks: %s", input.Rejections), 2, false)
-			}
-			for fi, f := range facts {
-				addSpoken(f, 3+fi, fi%2 == 1)
-			}
-			addSpoken("Between press accounts, rivals, and public myth, the versions do not always match.", 4, false)
-			addSpoken("This film uses only what can be attributed.", 5, false)
-			addAmbient("Silence", 5, 6)
-
-		case 4: // Scale & Expansion (9:30 – 12:30)
-			addSpoken(fmt.Sprintf("Then came the turning point that moved %s onto a larger stage.", name), 0, false)
-			if input.TurningPoints != "" {
-				addSpoken(input.TurningPoints, 1, false)
-			}
-			if input.CareerProgression != "" {
-				addSpoken(input.CareerProgression, 2, false)
-			}
-			for fi, f := range facts {
-				addSpoken(f, 3+fi, fi%2 == 1)
-			}
-			addSpoken(fmt.Sprintf("By then, the audience was no longer a single room or local circle in %s.", country), 4, false)
-			addSpoken("No single room could hold the reach of what followed.", 5, true)
-
-		case 5: // Reckoning & Accountability (12:30 – 18:00)
-			addSpoken(fmt.Sprintf("Scale brings scrutiny. Inside %s, the questions grew sharper.", domain.ReckoningRoom), 0, false)
-			if input.Obstacles != "" {
-				addSpoken(fmt.Sprintf("Observers and archival sources point to sustained pressures: %s", input.Obstacles), 1, false)
-			}
-			if input.Breakthrough != "" {
-				addSpoken(fmt.Sprintf("Even after %s, institutional questions remained on the table.", input.Breakthrough), 2, false)
-			}
-			for fi, f := range facts {
-				addSpoken(f, 3+fi, fi%2 == 1)
-			}
-			addSpoken("These episodes are drawn from public records, published reporting, and attributed filings.", 4, false)
-			addSpoken(fmt.Sprintf("Across every chapter of %s's career, ambition and accountability moved side by side.", name), 5, true)
-			addAmbient(domain.AmbientCues[2], 4, 6)
-			addAmbient(domain.AmbientCues[3], 5, 6)
-
-		case 6: // The Open Question (18:00 – 20:00)
-			addSpoken(fmt.Sprintf("Years after those first quiet hours inside %s, %s stands at the center of %s.", domain.OriginRoom, name, domain.Label), 0, false)
-			addSpoken(fmt.Sprintf("On one side of the ledger: %s", cleanShortSentence(firstNonEmpty(input.Breakthrough, input.Summary), 26)), 1, false)
-			addSpoken(fmt.Sprintf("On the other: %s", cleanShortSentence(firstNonEmpty(input.Obstacles, input.Rejections, "the unresolved institutional questions that follow rapid influence."), 26)), 2, false)
-			for fi, f := range facts {
-				addSpoken(f, 3+fi, fi%2 == 1)
-			}
-			addSpoken(domain.ClosingQuestion, 4, false)
-			addSpoken(fmt.Sprintf("From %s to %s—between them sits a question not yet settled.", domain.OriginRoom, domain.OpeningRoom), 5, true)
-			addAmbient(domain.AmbientCues[0], 4, 6)
-			addSpoken("The record is not closed.", 5, true)
-			addAmbient("Silence", 5, 4)
-		}
-
-		claim := ScriptClaimRef{URL: "https://en.wikipedia.org"}
-		if len(input.Claims) > 0 {
-			claim = input.Claims[chIdx%len(input.Claims)]
-		}
-
-		sections[chIdx] = ScriptSection{
-			ActNumber:       chIdx + 1,
-			ChapterNumber:   chIdx,
-			Title:           title,
-			TimeRange:       timeRange,
-			DomainField:     domain.Label,
-			CentralQuestion: domain.CentralQuestion,
-			Shots:           draftShots,
-			ClaimID:         claim.ClaimID,
-			SourceID:        claim.SourceID,
-			CitationURL:     claim.URL,
-		}
-	}
-
-	sections = EnforceMaxSevenSecondPacing(sections, domain, input, targetDurationMinutes)
-	return openingHook, sections
-}
-
 // EnforceMaxSevenSecondPacing guarantees:
 // 1. Every single spoken shot is <= 17 words and <= 7.0 seconds (splitting long lines with `...` bridges
 //    and inserting cutaway visuals).
@@ -2156,8 +1967,8 @@ func max(a, b int) int {
 	return b
 }
 
-// RegenerateScriptBlock refines a single shot or paragraph block in a realigned documentary script,
-// keeping the <= 7-second visual/speech cadence and restrained journalistic tone.
+// RegenerateScriptBlock refines a single shot or paragraph block in a realigned documentary script
+// strictly via Gemini AI (no local fallback — returns an error if AI is unavailable or fails).
 func RegenerateScriptBlock(
 	personName string,
 	category string,
@@ -2167,55 +1978,48 @@ func RegenerateScriptBlock(
 	blockIndex int,
 	tone string,
 	geminiRefiner func(personName, field, existingBlock, biography, tone string) (string, string, error),
-) string {
+) (string, error) {
+	if geminiRefiner == nil {
+		return "", fmt.Errorf("Gemini AI required for shot refinement: no AI refiner configured")
+	}
 	blocks := strings.Split(fullText, "\n\n")
 	if blockIndex < 0 || blockIndex >= len(blocks) {
-		return fullText
+		return "", fmt.Errorf("invalid script block index %d", blockIndex)
 	}
 	target := strings.TrimSpace(blocks[blockIndex])
 	if target == "" || target == "---" {
-		return fullText
+		return "", fmt.Errorf("selected block #%d is empty", blockIndex+1)
 	}
 
 	domain := ResolveBiographicalDomain(category, biography, summary, "", "auto")
 	lines := strings.Split(target, "\n")
 
-	// Check if this block is a structured [M:SS] VISUAL ... + NARRATOR (V.O.) shot block
+	v, n, err := geminiRefiner(personName, domain.Label, target, biography, tone)
+	if err != nil {
+		return "", fmt.Errorf("Gemini AI shot refinement failed: %s", sanitizeAIErrorForUI(err))
+	}
+	v = strings.TrimSpace(v)
+	n = strings.TrimSpace(n)
+	if v == "" && n == "" {
+		return "", fmt.Errorf("Gemini AI returned an empty refinement for block #%d", blockIndex+1)
+	}
+
+	// Structured [M:SS] VISUAL ... + NARRATOR (V.O.) shot block
 	if len(lines) >= 1 {
 		if m := reShotHeader.FindStringSubmatch(strings.TrimSpace(lines[0])); len(m) == 3 {
 			ts := m[1]
-			origVisual := strings.TrimSpace(m[2])
-			origNarr := ""
+			newVisual := strings.TrimSpace(m[2])
+			if v != "" {
+				newVisual = v
+			}
+			newNarr := ""
 			if len(lines) >= 2 && strings.HasPrefix(strings.TrimSpace(lines[1]), "NARRATOR (V.O.):") {
-				origNarr = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[1]), "NARRATOR (V.O.):"))
+				newNarr = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[1]), "NARRATOR (V.O.):"))
 			}
-
-			newVisual := origVisual
-			newNarr := origNarr
-			if geminiRefiner != nil {
-				if v, n, err := geminiRefiner(personName, domain.Label, target, biography, tone); err == nil {
-					if v != "" {
-						newVisual = v
-					}
-					if n != "" {
-						chunks := splitNarrationToSevenSecondChunks(n, MaxWordsPerShot)
-						if len(chunks) > 0 {
-							newNarr = chunks[0]
-						}
-					}
-				}
-			}
-			if newNarr == origNarr && origNarr != "" {
-				// Deterministic journalistic refinement keeping <= 17 words
-				words := strings.Fields(origNarr)
-				if len(words) > MaxWordsPerShot {
-					chunks := splitNarrationToSevenSecondChunks(origNarr, MaxWordsPerShot)
+			if n != "" {
+				chunks := splitNarrationToSevenSecondChunks(n, MaxWordsPerShot)
+				if len(chunks) > 0 {
 					newNarr = chunks[0]
-				} else if !strings.Contains(strings.ToLower(origNarr), "record") && len(words) <= 12 {
-					newNarr = strings.TrimRight(origNarr, ".") + ", according to public records."
-				}
-				if newVisual == origVisual {
-					newVisual = pickShotVisual(domain, blockIndex%7, blockIndex+1, blockIndex%2 == 1)
 				}
 			}
 
@@ -2224,18 +2028,14 @@ func RegenerateScriptBlock(
 			} else if len(lines) >= 2 {
 				blocks[blockIndex] = fmt.Sprintf("[%s] VISUAL: %s  \n%s", ts, newVisual, strings.TrimSpace(lines[1]))
 			}
-			return strings.Join(blocks, "\n\n")
+			return strings.Join(blocks, "\n\n"), nil
 		}
 	}
 
-	// Plain paragraph fallback (kept concise and journalistic, never sports-hardcoded)
-	if geminiRefiner != nil {
-		if _, n, err := geminiRefiner(personName, domain.Label, target, biography, tone); err == nil && n != "" {
-			blocks[blockIndex] = n
-			return strings.Join(blocks, "\n\n")
-		}
+	if n == "" {
+		return "", fmt.Errorf("Gemini AI returned empty narration for block #%d", blockIndex+1)
 	}
-	blocks[blockIndex] = strings.TrimRight(target, ".") + " — as corroborated in attributed archival reporting."
-	return strings.Join(blocks, "\n\n")
+	blocks[blockIndex] = n
+	return strings.Join(blocks, "\n\n"), nil
 }
 

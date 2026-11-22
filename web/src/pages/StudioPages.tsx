@@ -299,6 +299,10 @@ export const ProductionStudioPage: React.FC = () => {
   const [briefBusy, setBriefBusy] = useState(false);
   const [seoSaved, setSeoSaved] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [scriptError, setScriptError] = useState('');
+  const [briefError, setBriefError] = useState('');
+  const [seoError, setSeoError] = useState('');
+  const [expandedTranscriptIdx, setExpandedTranscriptIdx] = useState<number | null>(null);
   const [copiedId, setCopiedId] = useState('');
   const [exportResult, setExportResult] = useState<any>(null);
 
@@ -366,6 +370,7 @@ export const ProductionStudioPage: React.FC = () => {
 
   const handleRegenerateScript = async () => {
     setBusy(true);
+    setScriptError('');
     try {
       await apiFetch(`/api/projects/${proj.id}/script/generate`, {
         method: 'POST',
@@ -376,6 +381,8 @@ export const ProductionStudioPage: React.FC = () => {
         }),
       });
       loadWorkspace(proj.id);
+    } catch (err: any) {
+      setScriptError(err?.message || 'Failed to regenerate documentary script');
     } finally {
       setBusy(false);
     }
@@ -383,12 +390,15 @@ export const ProductionStudioPage: React.FC = () => {
 
   const handleRegenerateParagraph = async (idx: number) => {
     setBusy(true);
+    setScriptError('');
     try {
       await apiFetch(`/api/projects/${proj.id}/script/regenerate-paragraph`, {
         method: 'POST',
         body: JSON.stringify({ paragraphIndex: idx }),
       });
       loadWorkspace();
+    } catch (err: any) {
+      setScriptError(err?.message || 'Gemini AI shot refinement failed');
     } finally {
       setBusy(false);
     }
@@ -476,9 +486,12 @@ export const ProductionStudioPage: React.FC = () => {
 
   const handleGenerateProjectSEO = async () => {
     setSeoBusy(true);
+    setSeoError('');
     try {
       await apiFetch(`/api/projects/${proj.id}/seo/generate`, { method: 'POST', body: '{}' });
       loadWorkspace(proj.id);
+    } catch (err: any) {
+      setSeoError(err?.message || 'Gemini AI YouTube SEO packaging failed');
     } finally {
       setSeoBusy(false);
     }
@@ -486,9 +499,12 @@ export const ProductionStudioPage: React.FC = () => {
 
   const handleGenerateCompetitiveBrief = async () => {
     setBriefBusy(true);
+    setBriefError('');
     try {
       await apiFetch(`/api/projects/${proj.id}/competitive-brief/generate`, { method: 'POST', body: '{}' });
       loadWorkspace(proj.id);
+    } catch (err: any) {
+      setBriefError(err?.message || 'Gemini AI Stage 0 Competitor Study failed');
     } finally {
       setBriefBusy(false);
     }
@@ -597,6 +613,19 @@ export const ProductionStudioPage: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {seoError && (
+              <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-500 flex items-center justify-between gap-3">
+                <span><strong>AI SEO Error:</strong> {seoError}</span>
+                <button
+                  type="button"
+                  onClick={() => navigate('/settings')}
+                  className="px-3 py-1 rounded-full bg-rose-500 text-white text-[11px] font-extrabold shrink-0 cursor-pointer"
+                >
+                  Open AI Settings →
+                </button>
+              </div>
+            )}
 
             <div>
               <div className="text-xs font-extrabold text-nexa-text-muted uppercase">
@@ -796,6 +825,15 @@ export const ProductionStudioPage: React.FC = () => {
                       <span className="px-2.5 py-0.5 rounded-full bg-nexa-brand/10 text-nexa-brand border border-nexa-brand/20 text-[10px] font-extrabold">
                         {proj.competitiveBrief.commentsAnalyzedCount || 0} Viewer Comments Mined
                       </span>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full border text-[10px] font-extrabold ${
+                          proj.competitiveBrief.usedGemini
+                            ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/25'
+                            : 'bg-amber-500/10 text-amber-500 border-amber-500/25'
+                        }`}
+                      >
+                        {proj.competitiveBrief.usedGemini ? 'Gemini AI Strategy' : 'Data-Driven Strategy'}
+                      </span>
                     </>
                   )}
                 </div>
@@ -806,16 +844,42 @@ export const ProductionStudioPage: React.FC = () => {
                   Automatically transcribes top competing YouTube videos &amp; mines viewer comments before writing so this script outperforms them on hooks, depth, and retention.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={handleGenerateCompetitiveBrief}
-                disabled={briefBusy || busy}
-                className="px-4 py-2 rounded-full border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-xs font-extrabold flex items-center gap-1.5 cursor-pointer shrink-0 w-fit"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${briefBusy ? 'animate-spin' : ''}`} />
-                {briefBusy ? 'Transcribing & Studying Videos...' : proj.competitiveBrief ? 'Refresh Competitor Study' : 'Run Competitor Study'}
-              </button>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleGenerateCompetitiveBrief}
+                  disabled={briefBusy || busy}
+                  className="px-4 py-2 rounded-full border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-xs font-extrabold flex items-center gap-1.5 cursor-pointer w-fit"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${briefBusy ? 'animate-spin' : ''}`} />
+                  {briefBusy ? 'Transcribing & Studying Videos...' : proj.competitiveBrief ? 'Refresh Competitor Study' : 'Run Competitor Study'}
+                </button>
+                {proj.competitiveBrief && (
+                  <button
+                    type="button"
+                    onClick={handleRegenerateScript}
+                    disabled={busy || briefBusy}
+                    className="px-4 py-2 rounded-full bg-nexa-brand hover:bg-nexa-brand-hover text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer w-fit disabled:opacity-50"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {busy ? 'Rewriting Script...' : 'Apply Brief & Rewrite Script'}
+                  </button>
+                )}
+              </div>
             </div>
+
+            {briefError && (
+              <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-500 flex items-center justify-between gap-3">
+                <span><strong>Stage 0 AI Error:</strong> {briefError}</span>
+                <button
+                  type="button"
+                  onClick={() => navigate('/settings')}
+                  className="px-3 py-1 rounded-full bg-rose-500 text-white text-[11px] font-extrabold shrink-0 cursor-pointer"
+                >
+                  Open AI Settings →
+                </button>
+              </div>
+            )}
 
             {proj.competitiveBrief ? (
               <div className="space-y-4">
@@ -867,26 +931,61 @@ export const ProductionStudioPage: React.FC = () => {
                   </div>
                 </div>
 
+                {(proj.competitiveBrief.scriptExecutionPlan || []).length > 0 && (
+                  <div className="p-4 rounded-2xl bg-nexa-bg-base border border-nexa-border space-y-2">
+                    <div className="text-[11px] font-extrabold uppercase text-nexa-text-primary">
+                      How This Outperformance Strategy Maps Into Your Script
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                      {(proj.competitiveBrief.scriptExecutionPlan || []).map((step: string, idx: number) => (
+                        <div key={idx} className="p-3 rounded-xl bg-nexa-bg-card border border-nexa-border text-xs text-nexa-text-secondary leading-relaxed">
+                          {step}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {(proj.competitiveBrief.studiedVideos || []).length > 0 && (
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {(proj.competitiveBrief.studiedVideos || []).map((sv: any, idx: number) => (
-                      <a
-                        key={idx}
-                        href={sv.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-3 py-1.5 rounded-full bg-nexa-bg-base border border-nexa-border hover:border-nexa-brand text-[11px] font-bold text-nexa-text-primary inline-flex items-center gap-2 transition"
-                      >
-                        <span className="truncate max-w-[220px]">{sv.title}</span>
-                        <span className="text-emerald-500 font-extrabold">{Number(sv.channelMultiplier || 1).toFixed(1)}x</span>
-                        {sv.transcriptAvailable && (
-                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-500 text-[9px] font-extrabold">
-                            TRANSCRIBED
-                          </span>
-                        )}
-                        <ExternalLink className="w-3 h-3 text-nexa-text-muted shrink-0" />
-                      </a>
-                    ))}
+                  <div className="space-y-2 pt-1">
+                    <div className="flex flex-wrap gap-2">
+                      {(proj.competitiveBrief.studiedVideos || []).map((sv: any, idx: number) => (
+                        <div
+                          key={idx}
+                          className="px-3 py-1.5 rounded-full bg-nexa-bg-base border border-nexa-border text-[11px] font-bold text-nexa-text-primary inline-flex items-center gap-2"
+                        >
+                          <a
+                            href={sv.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="truncate max-w-[210px] hover:text-nexa-brand inline-flex items-center gap-1"
+                          >
+                            <span className="truncate">{sv.title}</span>
+                            <ExternalLink className="w-3 h-3 text-nexa-text-muted shrink-0" />
+                          </a>
+                          <span className="text-emerald-500 font-extrabold">{Number(sv.channelMultiplier || 1).toFixed(1)}x</span>
+                          {sv.transcriptAvailable && (
+                            <button
+                              type="button"
+                              onClick={() => setExpandedTranscriptIdx(expandedTranscriptIdx === idx ? null : idx)}
+                              className="px-2 py-0.5 rounded-full bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-500 text-[9px] font-extrabold cursor-pointer"
+                            >
+                              {expandedTranscriptIdx === idx ? 'HIDE TRANSCRIPT' : 'READ TRANSCRIPT'}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {expandedTranscriptIdx !== null && proj.competitiveBrief.studiedVideos[expandedTranscriptIdx]?.transcriptExcerpt && (
+                      <div className="p-3.5 rounded-2xl bg-nexa-bg-base border border-emerald-500/25 text-xs text-nexa-text-secondary space-y-1">
+                        <div className="text-[10px] font-extrabold uppercase text-emerald-500">
+                          Transcribed Competitor Excerpt — {proj.competitiveBrief.studiedVideos[expandedTranscriptIdx].channelName}
+                        </div>
+                        <p className="italic leading-relaxed">
+                          &ldquo;{proj.competitiveBrief.studiedVideos[expandedTranscriptIdx].transcriptExcerpt}&rdquo;
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -908,6 +1007,20 @@ export const ProductionStudioPage: React.FC = () => {
                   Side-by-side narrator monologue &amp; visual shots paced at a maximum of 7 seconds per image.
                 </p>
                 <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                  {scr.generationMeta?.usedGemini ? (
+                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-500 border border-emerald-500/30 text-[10px] font-extrabold">
+                      ✓ Written by Live Gemini AI ({scr.generationMeta.model || 'gemini-2.5-flash'})
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-0.5 rounded-full bg-rose-500/10 text-rose-500 border border-rose-500/30 text-[10px] font-extrabold">
+                      ⚠ Local Fallback Engine (Not AI-Written)
+                    </span>
+                  )}
+                  {scr.generationMeta?.openingArchetype && (
+                    <span className="px-2.5 py-0.5 rounded-full bg-purple-500/10 text-purple-500 border border-purple-500/25 text-[10px] font-extrabold">
+                      Opening: {scr.generationMeta.openingArchetype}
+                    </span>
+                  )}
                   {scr.biographicalField && (
                     <span className="px-2.5 py-0.5 rounded-full bg-nexa-brand/10 text-nexa-brand border border-nexa-brand/20 text-[10px] font-extrabold">
                       Field: {scr.biographicalField}
@@ -983,6 +1096,43 @@ export const ProductionStudioPage: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {scriptError && (
+              <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-500 flex items-center justify-between gap-3">
+                <span><strong>Script Generation Blocked:</strong> {scriptError}</span>
+                <button
+                  type="button"
+                  onClick={() => navigate('/settings')}
+                  className="px-3 py-1 rounded-full bg-rose-500 text-white text-[11px] font-extrabold shrink-0 cursor-pointer"
+                >
+                  Fix AI Key →
+                </button>
+              </div>
+            )}
+
+            {!scriptError && scr.generationMeta && !scr.generationMeta.usedGemini && scr.generationMeta.aiError && (
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-600 dark:text-amber-400 flex items-center justify-between gap-3">
+                <span>
+                  <strong>Why this script used local fallback instead of Gemini AI:</strong> {scr.generationMeta.aiError}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => navigate('/settings')}
+                  className="px-3 py-1 rounded-full bg-amber-500 text-white text-[11px] font-extrabold shrink-0 cursor-pointer"
+                >
+                  Open AI Settings →
+                </button>
+              </div>
+            )}
+
+            {scr.generationMeta?.usedGemini && scr.generationMeta?.underdogAngle && (
+              <div className="p-3.5 rounded-2xl bg-emerald-500/5 border border-emerald-500/25 text-xs text-nexa-text-primary">
+                <span className="font-extrabold text-emerald-500 uppercase text-[10px] mr-2">
+                  AI Underdog Angle ({scr.generationMeta.transcriptsUsed || 0} Transcripts • {scr.generationMeta.commentsUsed || 0} Comments):
+                </span>
+                {scr.generationMeta.underdogAngle}
+              </div>
+            )}
 
             <div className="flex items-center justify-between gap-2 pt-1">
               <div className="inline-flex items-center p-1 rounded-full bg-nexa-bg-base border border-nexa-border">

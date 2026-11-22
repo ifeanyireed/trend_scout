@@ -98,176 +98,8 @@ func TagsTotalChars(tags []string) int {
 	return len(strings.Join(tags, ", "))
 }
 
-// BuildDeterministicVideoPackaging creates high-performing YouTube description, tags (<=480 chars),
-// hashtags, and titles grounded in the subject's biographical domain and chapter timestamps.
-func BuildDeterministicVideoPackaging(
-	personName string,
-	domain BiographicalDomainProfile,
-	country string,
-	headline string,
-	achievement string,
-	summary string,
-	chapterTimestamps string,
-	targetDurationMinutes int,
-) VideoSEOContent {
-	name := strings.TrimSpace(personName)
-	if name == "" {
-		name = "Documentary Subject"
-	}
-	if targetDurationMinutes < 15 || targetDurationMinutes > 25 {
-		targetDurationMinutes = 20
-	}
-	if strings.TrimSpace(chapterTimestamps) == "" {
-		windows := ai.ComputeChapterTimeWindows(targetDurationMinutes * 60)
-		var cb strings.Builder
-		for i, w := range windows {
-			cb.WriteString(fmt.Sprintf("%s %s\n", formatMMSS(w[0]), domain.ChapterTitles[i]))
-		}
-		chapterTimestamps = strings.TrimSpace(cb.String())
-	}
-
-	hookAchievement := cleanShortSentence(firstNonEmpty(achievement, headline, summary), 26)
-	if hookAchievement == "" {
-		hookAchievement = fmt.Sprintf("How %s rose from %s to reshape %s.", name, domain.OriginRoom, domain.Label)
-	}
-	overview := cleanShortSentence(firstNonEmpty(summary, headline, achievement), 42)
-	if overview == "" {
-		overview = fmt.Sprintf("An investigative %d-minute biographical documentary tracing %s from early origins to public reckoning.", targetDurationMinutes, name)
-	}
-
-	titles := []string{
-		fmt.Sprintf("%s: The Complete %s Documentary", name, domain.Label),
-		fmt.Sprintf("How %s Changed %s — And What the Record Shows", name, domain.Label),
-		fmt.Sprintf("Inside the Rise & Reckoning of %s (Full Documentary)", name),
-	}
-
-	// Domain-specific high-intent SEO keywords
-	domainKeywords := map[string][]string{
-		"tech_innovation":    {"tech documentary", "silicon valley history", "tech founder biography", "platform accountability", "innovation story", "big tech"},
-		"business_founders":  {"business documentary", "founder biography", "corporate history", "entrepreneur story", "billionaire rise", "business profile"},
-		"science_medicine":   {"science documentary", "medical breakthrough", "scientist biography", "research history", "nobel story", "scientific discovery"},
-		"politics_law":       {"political documentary", "legal history", "public inquiry", "investigative biography", "governance", "courtroom record"},
-		"sports_competition": {"sports documentary", "underdog story", "athlete biography", "championship comeback", "sports history", "unseeded champion"},
-		"arts_culture":       {"arts documentary", "cultural biography", "cinema history", "creator profile", "behind the work", "artist documentary"},
-		"humanitarian_civic": {"humanitarian documentary", "civic leadership", "social impact story", "activist biography", "investigative profile", "changemaker"},
-	}
-	domTags := domainKeywords[domain.Key]
-	if len(domTags) == 0 {
-		domTags = []string{"biographical documentary", "investigative documentary", "true story", "untold biography", "mini documentary"}
-	}
-
-	rawTags := []string{
-		name,
-		name + " documentary",
-		name + " biography",
-		name + " true story",
-		name + " full story",
-		name + " rise and reckoning",
-		strings.ToLower(domain.Label),
-		"investigative documentary",
-		"biographical documentary",
-		"mini documentary",
-		"underdog documentary",
-		"documentary film",
-	}
-	if strings.TrimSpace(country) != "" && !strings.EqualFold(country, "Global") {
-		rawTags = append(rawTags, name+" "+country, country+" documentary")
-	}
-	rawTags = append(rawTags, domTags...)
-	// Add concise keywords from headline if useful
-	for _, w := range extractHeadlineKeywords(headline) {
-		rawTags = append(rawTags, name+" "+w)
-	}
-	tags := NormalizeTags(rawTags, 480)
-
-	rawHashtags := []string{
-		name,
-		domain.Label,
-		"Documentary",
-		"Biography",
-		"InvestigativeDocumentary",
-		"TrueStory",
-		"MiniDoc",
-		"UnderdogStory",
-	}
-	if strings.TrimSpace(country) != "" && !strings.EqualFold(country, "Global") {
-		rawHashtags = append(rawHashtags, country)
-	}
-	for _, dt := range domTags[:minInt(3, len(domTags))] {
-		rawHashtags = append(rawHashtags, dt)
-	}
-	hashtags := NormalizeHashtags(rawHashtags, 10)
-
-	footerTags := hashtags
-	if len(footerTags) > 4 {
-		footerTags = footerTags[:4]
-	}
-
-	desc := fmt.Sprintf(`%s — %s
-
-In this %d-minute investigative biographical documentary, we examine the documented trajectory of %s inside %s: %s
-
-%s
-
-Chapters:
-%s
-
-Editorial Note:
-Every milestone, date, and attribution in this film is grounded in public records, archival journalism, and verified reporting. Where claims are contested, both sides of the public record are presented side by side.
-
-If you value restrained, source-grounded biographical documentaries, subscribe and share which moment in %s's record stood out most to you in the comments.
-
-%s`,
-		name,
-		hookAchievement,
-		targetDurationMinutes,
-		name,
-		domain.Label,
-		overview,
-		domain.CentralQuestion,
-		chapterTimestamps,
-		name,
-		strings.Join(footerTags, " "),
-	)
-
-	return VideoSEOContent{
-		RecommendedTitles: titles,
-		VideoDescription:  strings.TrimSpace(desc),
-		Tags:              tags,
-		Hashtags:          hashtags,
-		TagsCharCount:     TagsTotalChars(tags),
-		UsedGemini:        false,
-	}
-}
-
-func extractHeadlineKeywords(headline string) []string {
-	stop := map[string]bool{
-		"the": true, "and": true, "for": true, "with": true, "from": true, "that": true,
-		"this": true, "into": true, "over": true, "after": true, "before": true, "about": true,
-		"their": true, "have": true, "been": true, "will": true, "amid": true, "says": true,
-	}
-	cleaned := nonAlphaNumSpace.ReplaceAllString(strings.ToLower(headline), " ")
-	var out []string
-	for _, w := range strings.Fields(cleaned) {
-		if len(w) >= 5 && !stop[w] {
-			out = append(out, w)
-			if len(out) >= 3 {
-				break
-			}
-		}
-	}
-	return out
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func buildChapterTimestampsForProject(ctx context.Context, projectID string, domain BiographicalDomainProfile, targetDurationMinutes int) string {
-	if projectID != "" {
+	if projectID != "" && db.DB != nil {
 		var secJSON string
 		err := db.DB.QueryRowContext(ctx, `
 			SELECT sv.sections_json
@@ -315,24 +147,29 @@ func buildChapterTimestampsForProject(ctx context.Context, projectID string, dom
 	return strings.TrimSpace(cb.String())
 }
 
-func loadCompetitiveBriefPromptForPackaging(ctx context.Context, projectID, personID, discoveryID, personName string, domain BiographicalDomainProfile, targetDur int) string {
-	if projectID != "" {
+func loadCompetitiveBriefPromptForPackaging(ctx context.Context, projectID, personID, discoveryID, personName string, domain BiographicalDomainProfile, targetDur int) (string, error) {
+	if projectID != "" && db.DB != nil {
 		var raw string
 		if err := db.DB.QueryRowContext(ctx, `SELECT COALESCE(competitive_brief_json, '{}') FROM documentary_projects WHERE id = $1`, projectID).Scan(&raw); err == nil && raw != "" && raw != "{}" {
 			var parsed CompetitivePositioningBrief
-			if json.Unmarshal([]byte(raw), &parsed) == nil && (parsed.OutperformanceStrategy != "" || parsed.AnalyzedVideoCount > 0) {
-				return FormatCompetitiveBriefForPrompt(&parsed)
+			if json.Unmarshal([]byte(raw), &parsed) == nil && parsed.UsedGemini && (parsed.OutperformanceStrategy != "" || parsed.AnalyzedVideoCount > 0) {
+				return FormatCompetitiveBriefForPrompt(&parsed), nil
 			}
 		}
 	}
-	// If no brief cached on a project yet, build one directly from tracked YouTube videos/comments for this opportunity
-	_, promptStr := BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDur)
-	return promptStr
+	_, promptStr, err := BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDur)
+	if err != nil {
+		return "", err
+	}
+	return promptStr, nil
 }
 
 // GenerateOpportunityVideoPackaging builds and persists YouTube video description, high-performing tags,
-// and hashtags for a discovery opportunity (and syncs to any linked documentary project).
+// and hashtags strictly via Gemini AI (no local fallback).
 func GenerateOpportunityVideoPackaging(ctx context.Context, discoveryID string) (*VideoSEOContent, error) {
+	if !ai.HasGeminiKey(ctx) {
+		return nil, fmt.Errorf("Gemini AI required for YouTube SEO Packaging: no Gemini API key configured in Settings")
+	}
 	var personID, headline, achievement string
 	err := db.DB.QueryRowContext(ctx, `
 		SELECT person_id, COALESCE(headline, ''), COALESCE(achievement, '')
@@ -361,8 +198,14 @@ func GenerateOpportunityVideoPackaging(ctx context.Context, discoveryID string) 
 
 	domain := ResolveBiographicalDomain(category, bio, summary, headline, "auto")
 	chapterTS := buildChapterTimestampsForProject(ctx, linkedProjID, domain, targetDur)
-	compBriefPrompt := loadCompetitiveBriefPromptForPackaging(ctx, linkedProjID, personID, discoveryID, personName, domain, targetDur)
-	seo := generateVideoSEOWithFallback(ctx, personName, domain, country, headline, achievement, summary, bio, chapterTS, compBriefPrompt, targetDur)
+	compBriefPrompt, err := loadCompetitiveBriefPromptForPackaging(ctx, linkedProjID, personID, discoveryID, personName, domain, targetDur)
+	if err != nil {
+		return nil, err
+	}
+	seo, err := generateVideoSEOWithAI(ctx, personName, domain, country, headline, achievement, bio, chapterTS, compBriefPrompt, targetDur)
+	if err != nil {
+		return nil, err
+	}
 
 	tagsJSON, _ := json.Marshal(seo.Tags)
 	hashtagsJSON, _ := json.Marshal(seo.Hashtags)
@@ -391,8 +234,11 @@ func GenerateOpportunityVideoPackaging(ctx context.Context, discoveryID string) 
 }
 
 // GenerateProjectVideoPackaging builds and persists YouTube video description (synced to the project's
-// actual script chapters), high-performing tags, hashtags, and titles for a documentary project.
+// actual script chapters), high-performing tags, hashtags, and titles strictly via Gemini AI (no local fallback).
 func GenerateProjectVideoPackaging(ctx context.Context, projectID string) (*VideoSEOContent, error) {
+	if !ai.HasGeminiKey(ctx) {
+		return nil, fmt.Errorf("Gemini AI required for YouTube SEO Packaging: no Gemini API key configured in Settings")
+	}
 	var personID, discoveryID string
 	var targetDur int
 	err := db.DB.QueryRowContext(ctx, `
@@ -421,8 +267,14 @@ func GenerateProjectVideoPackaging(ctx context.Context, projectID string) (*Vide
 
 	domain := ResolveBiographicalDomain(category, bio, summary, headline, "auto")
 	chapterTS := buildChapterTimestampsForProject(ctx, projectID, domain, targetDur)
-	compBriefPrompt := loadCompetitiveBriefPromptForPackaging(ctx, projectID, personID, discoveryID, personName, domain, targetDur)
-	seo := generateVideoSEOWithFallback(ctx, personName, domain, country, headline, achievement, summary, bio, chapterTS, compBriefPrompt, targetDur)
+	compBriefPrompt, err := loadCompetitiveBriefPromptForPackaging(ctx, projectID, personID, discoveryID, personName, domain, targetDur)
+	if err != nil {
+		return nil, err
+	}
+	seo, err := generateVideoSEOWithAI(ctx, personName, domain, country, headline, achievement, bio, chapterTS, compBriefPrompt, targetDur)
+	if err != nil {
+		return nil, err
+	}
 
 	tagsJSON, _ := json.Marshal(seo.Tags)
 	hashtagsJSON, _ := json.Marshal(seo.Hashtags)
@@ -449,22 +301,20 @@ func GenerateProjectVideoPackaging(ctx context.Context, projectID string) (*Vide
 	return &seo, nil
 }
 
-func generateVideoSEOWithFallback(
+func generateVideoSEOWithAI(
 	ctx context.Context,
 	personName string,
 	domain BiographicalDomainProfile,
 	country string,
 	headline string,
 	achievement string,
-	summary string,
 	bio string,
 	chapterTS string,
 	competitiveBrief string,
 	targetDur int,
-) VideoSEOContent {
-	fallback := BuildDeterministicVideoPackaging(personName, domain, country, headline, achievement, summary, chapterTS, targetDur)
+) (VideoSEOContent, error) {
 	if !ai.HasGeminiKey(ctx) {
-		return fallback
+		return VideoSEOContent{}, fmt.Errorf("Gemini AI required for YouTube SEO Packaging: no Gemini API key configured in Settings")
 	}
 
 	bioInput := bio
@@ -475,27 +325,20 @@ func generateVideoSEOWithFallback(
 		ctx, personName, domain.Label, country, headline, achievement, bioInput, chapterTS, competitiveBrief, targetDur,
 	)
 	if err != nil || aiRes == nil {
-		return fallback
+		return VideoSEOContent{}, fmt.Errorf("Gemini AI YouTube SEO Packaging failed: %s", sanitizeAIErrorForUI(err))
+	}
+	if strings.TrimSpace(aiRes.VideoDescription) == "" || len(aiRes.RecommendedTitles) == 0 {
+		return VideoSEOContent{}, fmt.Errorf("Gemini AI returned incomplete YouTube SEO packaging (missing description or titles)")
 	}
 
-	out := fallback
-	out.UsedGemini = true
-	if strings.TrimSpace(aiRes.VideoDescription) != "" {
-		out.VideoDescription = strings.TrimSpace(aiRes.VideoDescription)
-	}
-	if len(aiRes.RecommendedTitles) > 0 {
-		out.RecommendedTitles = aiRes.RecommendedTitles
-	}
-	if len(aiRes.Tags) > 0 {
-		if norm := NormalizeTags(aiRes.Tags, 480); len(norm) > 0 {
-			out.Tags = norm
-		}
-	}
-	if len(aiRes.Hashtags) > 0 {
-		if norm := NormalizeHashtags(aiRes.Hashtags, 12); len(norm) > 0 {
-			out.Hashtags = norm
-		}
-	}
-	out.TagsCharCount = TagsTotalChars(out.Tags)
-	return out
+	tags := NormalizeTags(aiRes.Tags, 480)
+	hashtags := NormalizeHashtags(aiRes.Hashtags, 12)
+	return VideoSEOContent{
+		RecommendedTitles: aiRes.RecommendedTitles,
+		VideoDescription:  strings.TrimSpace(aiRes.VideoDescription),
+		Tags:              tags,
+		Hashtags:          hashtags,
+		TagsCharCount:     TagsTotalChars(tags),
+		UsedGemini:        true,
+	}, nil
 }

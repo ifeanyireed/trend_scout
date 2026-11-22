@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,159 +23,79 @@ type StudiedVideoSummary struct {
 	ChannelMultiplier   float64 `json:"channelMultiplier"`
 	EngagementRate      float64 `json:"engagementRate"`
 	VideoFormat         string  `json:"videoFormat"`
+	DurationSeconds     int     `json:"durationSeconds"`
 	TranscriptAvailable bool    `json:"transcriptAvailable"`
+	TranscriptExcerpt   string  `json:"transcriptExcerpt,omitempty"`
 	CommentsCount       int     `json:"commentsCount"`
 }
 
-type CompetitivePositioningBrief struct {
-	AnalyzedVideoCount      int                   `json:"analyzedVideoCount"`
-	TranscribedVideoCount   int                   `json:"transcribedVideoCount"`
-	CommentsAnalyzedCount   int                   `json:"commentsAnalyzedCount"`
-	WinningHooks            []string              `json:"winningHooks"`
-	WhatsWorking            []string              `json:"whatsWorking"`
-	AudienceQuestions       []string              `json:"audienceQuestions"`
-	CompetitorBlindSpots    []string              `json:"competitorBlindSpots"`
-	OutperformanceStrategy  string                `json:"outperformanceStrategy"`
-	RecommendedColdOpenEdge string                `json:"recommendedColdOpenEdge"`
-	FormatAdvantage         string                `json:"formatAdvantage"`
-	StudiedVideos           []StudiedVideoSummary `json:"studiedVideos"`
-	UsedGemini              bool                  `json:"usedGemini"`
-	GeneratedAt             string                `json:"generatedAt"`
+type CompetitiveSubjectContext struct {
+	Headline      string
+	Achievement   string
+	Summary       string
+	Origins       string
+	TurningPoints string
+	Obstacles     string
 }
 
-// BuildDeterministicCompetitiveBrief synthesizes a grounded competitive brief from real YouTube metrics,
-// transcripts, and viewer comments when Gemini is unavailable (or as baseline before Gemini refinement).
-func BuildDeterministicCompetitiveBrief(
-	personName string,
-	domain BiographicalDomainProfile,
-	studies []connectors.CompetitorVideoStudy,
-	targetDurationMinutes int,
-) CompetitivePositioningBrief {
-	brief := CompetitivePositioningBrief{
-		AnalyzedVideoCount: len(studies),
-		GeneratedAt:        time.Now().UTC().Format(time.RFC3339),
-	}
+type CompetitivePositioningBrief struct {
+	AnalyzedVideoCount       int                   `json:"analyzedVideoCount"`
+	TranscribedVideoCount    int                   `json:"transcribedVideoCount"`
+	CommentsAnalyzedCount    int                   `json:"commentsAnalyzedCount"`
+	WinningHooks             []string              `json:"winningHooks"`
+	WhatsWorking             []string              `json:"whatsWorking"`
+	AudienceQuestions        []string              `json:"audienceQuestions"`
+	CompetitorBlindSpots     []string              `json:"competitorBlindSpots"`
+	OutperformanceStrategy   string                `json:"outperformanceStrategy"`
+	RecommendedColdOpenEdge  string                `json:"recommendedColdOpenEdge"`
+	UnderdogOpeningArchetype string                `json:"underdogOpeningArchetype,omitempty"`
+	FormatAdvantage          string                `json:"formatAdvantage"`
+	ScriptExecutionPlan      []string              `json:"scriptExecutionPlan,omitempty"`
+	StudiedVideos            []StudiedVideoSummary `json:"studiedVideos"`
+	UsedGemini               bool                  `json:"usedGemini"`
+	GeneratedAt              string                `json:"generatedAt"`
+}
 
-	shortCount := 0
-	longCount := 0
-	topOutlier := 1.0
-	topTitle := ""
-	for _, st := range studies {
-		if st.TranscriptAvailable {
-			brief.TranscribedVideoCount++
-		}
-		brief.CommentsAnalyzedCount += len(st.TopComments)
-		if strings.Contains(st.VideoFormat, "Short") {
-			shortCount++
-		} else if strings.Contains(st.VideoFormat, "Long-Form") {
-			longCount++
-		}
-		if st.ChannelMultiplier > topOutlier {
-			topOutlier = st.ChannelMultiplier
-			topTitle = st.Title
-		}
-		brief.StudiedVideos = append(brief.StudiedVideos, StudiedVideoSummary{
-			VideoID:             st.VideoID,
-			Title:               st.Title,
-			ChannelName:         st.ChannelName,
-			URL:                 st.URL,
-			Views:               st.Views,
-			ViewsPerHour:        st.ViewsPerHour,
-			ChannelMultiplier:   st.ChannelMultiplier,
-			EngagementRate:      st.EngagementRate,
-			VideoFormat:         st.VideoFormat,
-			TranscriptAvailable: st.TranscriptAvailable,
-			CommentsCount:       len(st.TopComments),
-		})
-	}
+var likesPrefixRe = regexp.MustCompile(`^\[\d+\s+likes\]\s*`)
 
-	if len(studies) == 0 {
-		brief.WinningHooks = []string{
-			fmt.Sprintf("No high-velocity YouTube documentary yet dominates %s—first-mover prestige framing owns the search space.", personName),
-		}
-		brief.WhatsWorking = []string{
-			fmt.Sprintf("Organic audience curiosity around %s in %s with virtually zero long-form documentary supply.", personName, domain.Label),
-		}
-		brief.AudienceQuestions = []string{
-			fmt.Sprintf("How did %s go from %s to their defining public turning point?", personName, domain.OriginRoom),
-			"What verified primary records separate public myth from documented history?",
-		}
-		brief.CompetitorBlindSpots = []string{
-			"Zero competing long-form biographical documentaries currently anchor the search results.",
-			"Existing news clips summarize outcomes without examining formative failures or institutional tension.",
-		}
-		brief.OutperformanceStrategy = fmt.Sprintf("Establish the definitive %d-minute source-grounded biographical documentary on %s, pairing restrained archival journalism with <=7s visual pacing.", targetDurationMinutes, personName)
-		brief.RecommendedColdOpenEdge = fmt.Sprintf("Open in media res inside %s before pulling back to %s to lock curiosity in the first 30 seconds.", domain.OpeningRoom, domain.OriginRoom)
-		brief.FormatAdvantage = fmt.Sprintf("Full %d-minute chaptered documentary captures high watch-time sessions that short clips cannot retain.", targetDurationMinutes)
-		return brief
-	}
+func stripCommentLikesPrefix(c string) string {
+	return strings.TrimSpace(likesPrefixRe.ReplaceAllString(strings.TrimSpace(c), ""))
+}
 
-	if topTitle != "" {
-		brief.WinningHooks = append(brief.WinningHooks, fmt.Sprintf("Top outlier (%.1fx channel baseline): \"%s\" proves strong viewer appetite for %s's turning-point narrative.", topOutlier, truncateText(topTitle, 80), personName))
+func formatDurationShort(sec int) string {
+	if sec <= 0 {
+		return "short clip"
 	}
-	for _, st := range studies {
-		if st.TranscriptAvailable && len(st.TranscriptExcerpt) > 40 {
-			openSnippet := truncateText(st.TranscriptExcerpt, 130)
-			brief.WinningHooks = append(brief.WinningHooks, fmt.Sprintf("Transcribed opening cadence on %s (%s): \"%s\"", st.ChannelName, st.VideoFormat, openSnippet))
-		}
-		if len(brief.WinningHooks) >= 3 {
-			break
-		}
-	}
+	return fmt.Sprintf("%d:%02d", sec/60, sec%60)
+}
 
-	brief.WhatsWorking = []string{
-		fmt.Sprintf("Outlier demand up to %.1fx channel baseline demonstrates high browse/search pull for %s.", topOutlier, personName),
-		"Immediate human stakes and recognizable turning points drive strong viewer shares and comment debate.",
+func sanitizeAIErrorForUI(err error) string {
+	if err == nil {
+		return ""
 	}
-
-	// Surface real top viewer comments as audience questions/signals
-	for _, st := range studies {
-		for _, c := range st.TopComments {
-			brief.AudienceQuestions = append(brief.AudienceQuestions, c)
-			if len(brief.AudienceQuestions) >= 4 {
-				break
-			}
+	msg := err.Error()
+	low := strings.ToLower(msg)
+	switch {
+	case strings.Contains(low, "aiplatform.googleapis.com") && strings.Contains(low, "disabled"):
+		return "Vertex AI API (aiplatform.googleapis.com) is disabled for your AQ.* key — enable Vertex AI API in Google Cloud Console or switch Settings to a Google AI Studio (AIza...) key."
+	case strings.Contains(low, "api_key_service_blocked") || strings.Contains(low, "401"):
+		return "Gemini API key was rejected (401 Unauthorized) — open Settings and configure a valid Google AI Studio (AIza...) key or enabled Vertex AI Express key."
+	case strings.Contains(low, "429") || strings.Contains(low, "quota") || strings.Contains(low, "resource_exhausted"):
+		return "Gemini API quota exceeded (429) — wait briefly or upgrade your Gemini API quota."
+	case strings.Contains(low, "not configured") || strings.Contains(low, "not set"):
+		return "No Gemini API key configured — open Settings and add a valid Gemini API key."
+	default:
+		if len(msg) > 220 {
+			msg = msg[:217] + "..."
 		}
-		if len(brief.AudienceQuestions) >= 4 {
-			break
-		}
+		return msg
 	}
-	if len(brief.AudienceQuestions) == 0 {
-		brief.AudienceQuestions = []string{
-			fmt.Sprintf("What happened behind the scenes before %s's public breakthrough?", personName),
-			"What competing claims, setbacks, or unresolved controversies remain on the record?",
-		}
-	}
-
-	if longCount == 0 {
-		brief.CompetitorBlindSpots = append(brief.CompetitorBlindSpots,
-			fmt.Sprintf("Wide open long-form gap: %d of %d top competing videos are Shorts/clips with zero deep 15–25 minute documentaries.", shortCount, len(studies)))
-	} else {
-		brief.CompetitorBlindSpots = append(brief.CompetitorBlindSpots,
-			"Competing uploads rely on surface recaps rather than rigorously attributed multi-chapter investigative journalism.")
-	}
-	brief.CompetitorBlindSpots = append(brief.CompetitorBlindSpots,
-		"Lack of balanced ledger framing contrasting documented achievements against setbacks, disputes, and open questions.",
-		"Slow static B-roll pacing compared to disciplined <=7-second visual storytelling.")
-
-	brief.OutperformanceStrategy = fmt.Sprintf(
-		"Outperform all %d analyzed YouTube videos by opening inside %s with immediate unresolved tension, delivering the complete chronological record (%s) that Shorts and news clips skip, and maintaining <=7s visual cuts throughout all %d minutes.",
-		len(studies), domain.OpeningRoom, domain.Label, targetDurationMinutes,
-	)
-	brief.RecommendedColdOpenEdge = fmt.Sprintf("Contrast %s's most consequential public moment directly against %s within the first 45 seconds.", personName, domain.OriginRoom)
-	if longCount == 0 {
-		brief.FormatAdvantage = fmt.Sprintf("Exploit the wide-open documentary gap: existing coverage is dominated by Shorts/short clips (%d Short(s), 0 Long-Form), leaving high-retention %d-minute search and browse traffic uncontested.", shortCount, targetDurationMinutes)
-	} else {
-		brief.FormatAdvantage = fmt.Sprintf("Beat existing long-form uploads (%d detected) through austere source-attributed journalism, balanced ledger framing, and disciplined <=7s visual pacing.", longCount)
-	}
-
-	return brief
 }
 
 // FormatCompetitiveBriefForPrompt renders a concise, actionable directive injected into Stage 1 & Stage 2 script prompts.
 func FormatCompetitiveBriefForPrompt(brief *CompetitivePositioningBrief) string {
 	if brief == nil {
-		return "No competing YouTube videos analyzed yet; focus on definitive prestige investigative storytelling."
+		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Analyzed %d top YouTube videos (%d transcribed, %d viewer comments mined).\n",
@@ -184,6 +105,9 @@ func FormatCompetitiveBriefForPrompt(brief *CompetitivePositioningBrief) string 
 	}
 	if brief.RecommendedColdOpenEdge != "" {
 		sb.WriteString("COLD OPEN EDGE: " + brief.RecommendedColdOpenEdge + "\n")
+	}
+	if brief.UnderdogOpeningArchetype != "" {
+		sb.WriteString("UNDERDOG OPENING ARCHETYPE: " + brief.UnderdogOpeningArchetype + "\n")
 	}
 	if brief.FormatAdvantage != "" {
 		sb.WriteString("FORMAT ADVANTAGE: " + brief.FormatAdvantage + "\n")
@@ -197,11 +121,40 @@ func FormatCompetitiveBriefForPrompt(brief *CompetitivePositioningBrief) string 
 	if len(brief.AudienceQuestions) > 0 {
 		sb.WriteString("VIEWER QUESTIONS / DEBATES TO RESOLVE: " + strings.Join(brief.AudienceQuestions, " | ") + "\n")
 	}
+	if len(brief.ScriptExecutionPlan) > 0 {
+		sb.WriteString("CHAPTER EXECUTION PLAN: " + strings.Join(brief.ScriptExecutionPlan, " | ") + "\n")
+	}
 	return strings.TrimSpace(sb.String())
 }
 
+func loadSubjectContextForBrief(ctx context.Context, personID, discoveryID string) CompetitiveSubjectContext {
+	var sc CompetitiveSubjectContext
+	if db.DB == nil {
+		return sc
+	}
+	if personID != "" {
+		_ = db.DB.QueryRowContext(ctx, `SELECT COALESCE(summary, '') FROM people WHERE id = $1`, personID).Scan(&sc.Summary)
+		_ = db.DB.QueryRowContext(ctx, `
+			SELECT COALESCE(origins_summary, ''), COALESCE(turning_points, ''), COALESCE(obstacles, ''), COALESCE(recent_breakthrough, '')
+			FROM underdog_assessments WHERE person_id = $1 LIMIT 1
+		`, personID).Scan(&sc.Origins, &sc.TurningPoints, &sc.Obstacles, &sc.Achievement)
+	}
+	if discoveryID != "" {
+		var hl, ach string
+		if db.DB.QueryRowContext(ctx, `
+			SELECT COALESCE(headline, ''), COALESCE(achievement, '') FROM discoveries WHERE id = $1
+		`, discoveryID).Scan(&hl, &ach) == nil {
+			sc.Headline = hl
+			if strings.TrimSpace(ach) != "" {
+				sc.Achievement = ach
+			}
+		}
+	}
+	return sc
+}
+
 // BuildProjectCompetitiveBrief runs Stage 0 pre-script YouTube competitor study (transcribing top videos,
-// mining top viewer comments, synthesizing positioning via Gemini, and saving onto documentary_projects).
+// mining top viewer comments, and synthesizing positioning via Gemini AI). No local fallback: returns an error if AI is unavailable or fails.
 func BuildProjectCompetitiveBrief(
 	ctx context.Context,
 	projectID string,
@@ -210,32 +163,42 @@ func BuildProjectCompetitiveBrief(
 	personName string,
 	domain BiographicalDomainProfile,
 	targetDurationMinutes int,
-) (*CompetitivePositioningBrief, string) {
+) (*CompetitivePositioningBrief, string, error) {
+	if !ai.HasGeminiKey(ctx) {
+		return nil, "", fmt.Errorf("Gemini AI required for Stage 0 Competitor Study: no Gemini API key configured in Settings")
+	}
+	if targetDurationMinutes < 15 || targetDurationMinutes > 25 {
+		targetDurationMinutes = 20
+	}
+
 	aiCfg := ai.GetAIConfig(ctx)
+	subjectCtx := loadSubjectContextForBrief(ctx, personID, discoveryID)
 
 	// 1. Load tracked top YouTube videos from DB (or fetch live if none tracked yet)
 	var topVideos []connectors.VideoMetric
-	rows, err := db.DB.QueryContext(ctx, `
-		SELECT external_video_id, title, channel_name, channel_subscribers, url,
-		       views, likes, comments, views_per_hour, views_per_day, channel_relative_multiplier,
-		       published_at, COALESCE(duration_seconds, 0), COALESCE(video_format, 'Standard'),
-		       COALESCE(engagement_rate, 0), COALESCE(channel_baseline_views, 0), COALESCE(thumbnail_url, '')
-		FROM videos
-		WHERE discovery_id = $1 OR person_id = $2
-		ORDER BY views_per_hour DESC, views DESC
-		LIMIT 4
-	`, discoveryID, personID)
-	if err == nil && rows != nil {
-		for rows.Next() {
-			var v connectors.VideoMetric
-			if rows.Scan(&v.ExternalID, &v.Title, &v.ChannelName, &v.ChannelSubscribers, &v.VideoURL,
-				&v.Views, &v.Likes, &v.Comments, &v.ViewsPerHour, &v.ViewsPerDay, &v.ChannelMultiplier,
-				&v.PublishedAt, &v.DurationSeconds, &v.VideoFormat, &v.EngagementRate,
-				&v.ChannelBaselineViews, &v.ThumbnailURL) == nil {
-				topVideos = append(topVideos, v)
+	if db.DB != nil {
+		rows, err := db.DB.QueryContext(ctx, `
+			SELECT external_video_id, title, channel_name, channel_subscribers, url,
+			       views, likes, comments, views_per_hour, views_per_day, channel_relative_multiplier,
+			       published_at, COALESCE(duration_seconds, 0), COALESCE(video_format, 'Standard'),
+			       COALESCE(engagement_rate, 0), COALESCE(channel_baseline_views, 0), COALESCE(thumbnail_url, '')
+			FROM videos
+			WHERE discovery_id = $1 OR person_id = $2
+			ORDER BY views_per_hour DESC, views DESC
+			LIMIT 4
+		`, discoveryID, personID)
+		if err == nil && rows != nil {
+			for rows.Next() {
+				var v connectors.VideoMetric
+				if rows.Scan(&v.ExternalID, &v.Title, &v.ChannelName, &v.ChannelSubscribers, &v.VideoURL,
+					&v.Views, &v.Likes, &v.Comments, &v.ViewsPerHour, &v.ViewsPerDay, &v.ChannelMultiplier,
+					&v.PublishedAt, &v.DurationSeconds, &v.VideoFormat, &v.EngagementRate,
+					&v.ChannelBaselineViews, &v.ThumbnailURL) == nil {
+					topVideos = append(topVideos, v)
+				}
 			}
+			rows.Close()
 		}
-		rows.Close()
 	}
 
 	if len(topVideos) == 0 && personName != "" {
@@ -244,7 +207,7 @@ func BuildProjectCompetitiveBrief(
 		cancel()
 		if errYT == nil && len(fetched) > 0 {
 			topVideos = fetched
-			if discoveryID != "" {
+			if discoveryID != "" && db.DB != nil {
 				for _, v := range fetched {
 					_, _ = db.DB.ExecContext(ctx, `
 						INSERT INTO videos (
@@ -266,42 +229,66 @@ func BuildProjectCompetitiveBrief(
 	// 2. Concurrently transcribe top 3 competing videos & fetch top viewer comments
 	studies := connectors.AnalyzeCompetitorVideosConcurrently(ctx, topVideos, aiCfg.YouTubeAPIKey, 3)
 
-	// 3. Build deterministic baseline brief, then upgrade via Gemini if API key is active
-	brief := BuildDeterministicCompetitiveBrief(personName, domain, studies, targetDurationMinutes)
-
-	if len(studies) > 0 && ai.HasGeminiKey(ctx) {
-		studiesJSON, _ := json.Marshal(studies)
-		aiCtx, cancelAI := context.WithTimeout(ctx, 25*time.Second)
-		aiBrief, errAI := ai.AnalyzeCompetitorsForPositioningWithGemini(aiCtx, personName, domain.Label, string(studiesJSON), targetDurationMinutes)
-		cancelAI()
-		if errAI == nil && aiBrief != nil {
-			brief.UsedGemini = true
-			if len(aiBrief.WinningHooks) > 0 {
-				brief.WinningHooks = aiBrief.WinningHooks
-			}
-			if len(aiBrief.WhatsWorking) > 0 {
-				brief.WhatsWorking = aiBrief.WhatsWorking
-			}
-			if len(aiBrief.AudienceQuestions) > 0 {
-				brief.AudienceQuestions = aiBrief.AudienceQuestions
-			}
-			if len(aiBrief.CompetitorBlindSpots) > 0 {
-				brief.CompetitorBlindSpots = aiBrief.CompetitorBlindSpots
-			}
-			if strings.TrimSpace(aiBrief.OutperformanceStrategy) != "" {
-				brief.OutperformanceStrategy = strings.TrimSpace(aiBrief.OutperformanceStrategy)
-			}
-			if strings.TrimSpace(aiBrief.RecommendedColdOpenEdge) != "" {
-				brief.RecommendedColdOpenEdge = strings.TrimSpace(aiBrief.RecommendedColdOpenEdge)
-			}
-			if strings.TrimSpace(aiBrief.FormatAdvantage) != "" {
-				brief.FormatAdvantage = strings.TrimSpace(aiBrief.FormatAdvantage)
-			}
+	// 3. Synthesize competitive brief strictly with Gemini AI (zero local fallback)
+	studiesJSON := "[]"
+	if len(studies) > 0 {
+		if b, errM := json.Marshal(studies); errM == nil {
+			studiesJSON = string(b)
 		}
+	}
+	subjectSummary := fmt.Sprintf("Headline: %s\nBreakthrough: %s\nOrigins: %s\nTurning Points: %s\nObstacles: %s\nSummary: %s",
+		subjectCtx.Headline, subjectCtx.Achievement, subjectCtx.Origins, subjectCtx.TurningPoints, subjectCtx.Obstacles, subjectCtx.Summary)
+
+	aiCtx, cancelAI := context.WithTimeout(ctx, 25*time.Second)
+	aiBrief, errAI := ai.AnalyzeCompetitorsForPositioningWithGemini(aiCtx, personName, domain.Label, subjectSummary, studiesJSON, targetDurationMinutes)
+	cancelAI()
+	if errAI != nil || aiBrief == nil {
+		return nil, "", fmt.Errorf("Gemini AI Stage 0 Competitor Study failed: %s", sanitizeAIErrorForUI(errAI))
+	}
+
+	brief := CompetitivePositioningBrief{
+		AnalyzedVideoCount:       len(studies),
+		WinningHooks:             aiBrief.WinningHooks,
+		WhatsWorking:             aiBrief.WhatsWorking,
+		AudienceQuestions:        aiBrief.AudienceQuestions,
+		CompetitorBlindSpots:     aiBrief.CompetitorBlindSpots,
+		OutperformanceStrategy:   strings.TrimSpace(aiBrief.OutperformanceStrategy),
+		RecommendedColdOpenEdge:  strings.TrimSpace(aiBrief.RecommendedColdOpenEdge),
+		UnderdogOpeningArchetype: strings.TrimSpace(aiBrief.UnderdogOpeningArchetype),
+		FormatAdvantage:          strings.TrimSpace(aiBrief.FormatAdvantage),
+		ScriptExecutionPlan:      aiBrief.ScriptExecutionPlan,
+		UsedGemini:               true,
+		GeneratedAt:              time.Now().UTC().Format(time.RFC3339),
+	}
+
+	for _, st := range studies {
+		if st.TranscriptAvailable {
+			brief.TranscribedVideoCount++
+		}
+		brief.CommentsAnalyzedCount += len(st.TopComments)
+		var previewExcerpt string
+		if st.TranscriptAvailable && strings.TrimSpace(st.TranscriptExcerpt) != "" {
+			previewExcerpt = truncateText(strings.Join(strings.Fields(st.TranscriptExcerpt), " "), 420)
+		}
+		brief.StudiedVideos = append(brief.StudiedVideos, StudiedVideoSummary{
+			VideoID:             st.VideoID,
+			Title:               st.Title,
+			ChannelName:         st.ChannelName,
+			URL:                 st.URL,
+			Views:               st.Views,
+			ViewsPerHour:        st.ViewsPerHour,
+			ChannelMultiplier:   st.ChannelMultiplier,
+			EngagementRate:      st.EngagementRate,
+			VideoFormat:         st.VideoFormat,
+			DurationSeconds:     st.DurationSeconds,
+			TranscriptAvailable: st.TranscriptAvailable,
+			TranscriptExcerpt:   previewExcerpt,
+			CommentsCount:       len(st.TopComments),
+		})
 	}
 
 	// 4. Persist onto documentary_projects for Studio inspection & export
-	if projectID != "" {
+	if projectID != "" && db.DB != nil {
 		if b, errM := json.Marshal(brief); errM == nil {
 			_, _ = db.DB.ExecContext(ctx, `
 				UPDATE documentary_projects SET competitive_brief_json = $2, updated_at = NOW() WHERE id = $1
@@ -309,11 +296,14 @@ func BuildProjectCompetitiveBrief(
 		}
 	}
 
-	return &brief, FormatCompetitiveBriefForPrompt(&brief)
+	return &brief, FormatCompetitiveBriefForPrompt(&brief), nil
 }
 
 // GenerateProjectCompetitiveBrief triggers Stage 0 on demand for an existing documentary project.
 func GenerateProjectCompetitiveBrief(ctx context.Context, projectID string) (*CompetitivePositioningBrief, error) {
+	if !ai.HasGeminiKey(ctx) {
+		return nil, fmt.Errorf("Gemini AI required for Stage 0 Competitor Study: no Gemini API key configured in Settings")
+	}
 	var personID, discoveryID string
 	var targetDur int
 	err := db.DB.QueryRowContext(ctx, `
@@ -333,6 +323,9 @@ func GenerateProjectCompetitiveBrief(ctx context.Context, projectID string) (*Co
 	`, personID).Scan(&personName, &category, &summary, &bio)
 
 	domain := ResolveBiographicalDomain(category, bio, summary, "", "auto")
-	brief, _ := BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDur)
+	brief, _, err := BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDur)
+	if err != nil {
+		return nil, err
+	}
 	return brief, nil
 }
