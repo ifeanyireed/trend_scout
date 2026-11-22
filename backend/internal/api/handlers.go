@@ -711,7 +711,11 @@ func RegisterRoutes(mux *http.ServeMux) {
 				SELECT w.id, w.discovery_id, w.person_id, COALESCE(w.notes, ''), w.alert_on_stage_change, w.created_at::text,
 				       p.canonical_name, p.category, p.underdog_classification, d.headline, d.achievement, d.trend_stage,
 				       COALESCE(os.overall_score, 90.0),
-				       COALESCE((SELECT views_per_hour FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 0)
+				       COALESCE(
+				           (SELECT MAX(views_per_hour) FROM videos WHERE discovery_id = d.id OR person_id = d.person_id),
+				           (SELECT views_per_hour FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1),
+				           0
+				       )
 				FROM watchlists w
 				JOIN people p ON p.id = w.person_id
 				JOIN discoveries d ON d.id = w.discovery_id
@@ -1386,9 +1390,21 @@ func queryDiscoveriesList(ctx interface {
 		       COALESCE(os.audience_momentum, 88.0), COALESCE(os.documentary_potential, 93.0),
 		       COALESCE(os.timeliness_score, 90.0), COALESCE(os.evidence_confidence, 95.0),
 		       COALESCE(os.saturation_risk, 18.0),
-		       COALESCE((SELECT views_per_hour FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 0),
-		       COALESCE((SELECT views_total FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 0),
-		       COALESCE((SELECT channel_relative_perf FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 1.0)
+		       COALESCE(
+		           (SELECT MAX(views_per_hour) FROM videos WHERE discovery_id = d.id OR person_id = d.person_id),
+		           (SELECT views_per_hour FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1),
+		           0
+		       ),
+		       COALESCE(
+		           (SELECT MAX(views) FROM videos WHERE discovery_id = d.id OR person_id = d.person_id),
+		           (SELECT views_total FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1),
+		           0
+		       ),
+		       COALESCE(
+		           (SELECT MAX(channel_relative_multiplier) FROM videos WHERE discovery_id = d.id OR person_id = d.person_id),
+		           (SELECT channel_relative_perf FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1),
+		           1.0
+		       )
 		FROM discoveries d
 		JOIN people p ON p.id = d.person_id
 		JOIN events e ON e.id = d.event_id

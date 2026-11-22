@@ -675,15 +675,45 @@ func RunTrendMonitoringCycle(ctx context.Context) (int, error) {
 		newChan := it.chanMulti
 		newCov := it.cov
 
-		// Refresh live YouTube velocity on top 5 active subjects per cycle
+		// Refresh live YouTube velocity on top 5 active subjects per cycle (keeping videos & trend_observations in sync)
 		if idx < 5 {
-			ytCtx, cancelYT := context.WithTimeout(ctx, 4*time.Second)
-			vid, errYT := connectors.LookupYouTubeVideoForPerson(ytCtx, it.name, aiCfg.YouTubeAPIKey)
+			ytCtx, cancelYT := context.WithTimeout(ctx, 5*time.Second)
+			vids, errYT := connectors.LookupYouTubeIntelForPerson(ytCtx, it.name, aiCfg.YouTubeAPIKey)
 			cancelYT()
-			if errYT == nil && vid != nil && vid.Views > 0 {
-				newViews = vid.Views
-				newVph = vid.ViewsPerHour
-				newChan = vid.ChannelMultiplier
+			if errYT == nil && len(vids) > 0 && vids[0].Views > 0 {
+				_, _ = db.DB.ExecContext(ctx, `DELETE FROM videos WHERE discovery_id = $1 OR person_id = $2`, it.discID, it.personID)
+				for _, v := range vids {
+					_, _ = db.DB.ExecContext(ctx, `
+						INSERT INTO videos (
+							id, person_id, discovery_id, external_video_id, platform, title, channel_name,
+							channel_subscribers, url, views, likes, comments, views_per_hour, views_per_day,
+							channel_relative_multiplier, published_at, duration_seconds, video_format,
+							engagement_rate, channel_baseline_views, thumbnail_url
+						) VALUES ($1,$2,$3,$4,'YouTube',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+						ON CONFLICT (external_video_id) DO UPDATE SET
+							discovery_id = EXCLUDED.discovery_id,
+							views = EXCLUDED.views,
+							likes = EXCLUDED.likes,
+							comments = EXCLUDED.comments,
+							channel_subscribers = EXCLUDED.channel_subscribers,
+							views_per_hour = EXCLUDED.views_per_hour,
+							views_per_day = EXCLUDED.views_per_day,
+							channel_relative_multiplier = EXCLUDED.channel_relative_multiplier,
+							duration_seconds = EXCLUDED.duration_seconds,
+							video_format = EXCLUDED.video_format,
+							engagement_rate = EXCLUDED.engagement_rate,
+							channel_baseline_views = EXCLUDED.channel_baseline_views,
+							thumbnail_url = EXCLUDED.thumbnail_url,
+							recorded_at = NOW()
+					`, "vid-"+uuid.NewString()[:8], it.personID, it.discID, v.ExternalID, v.Title,
+						v.ChannelName, v.ChannelSubscribers, v.VideoURL,
+						v.Views, v.Likes, v.Comments, v.ViewsPerHour, v.ViewsPerDay, v.ChannelMultiplier,
+						v.PublishedAt, v.DurationSeconds, v.VideoFormat, v.EngagementRate,
+						v.ChannelBaselineViews, v.ThumbnailURL)
+				}
+				newViews = vids[0].Views
+				newVph = vids[0].ViewsPerHour
+				newChan = vids[0].ChannelMultiplier
 			}
 		}
 
@@ -727,7 +757,22 @@ func RefreshDiscoveryYouTubeMetrics(ctx context.Context, discoveryID string) (in
 		return 0, err
 	}
 
+	// Replace stale YouTube rows for this opportunity so Overview cards, Trend Snapshots & YouTube Intelligence stay 100% synced
+	_, _ = db.DB.ExecContext(ctx, `DELETE FROM videos WHERE discovery_id = $1 OR person_id = $2`, discoveryID, personID)
+
+	var maxVPH, maxVPD, maxMult float64
+	var maxViews int64
 	for _, v := range videos {
+		if v.ViewsPerHour > maxVPH {
+			maxVPH = v.ViewsPerHour
+			maxVPD = v.ViewsPerDay
+		}
+		if v.Views > maxViews {
+			maxViews = v.Views
+		}
+		if v.ChannelMultiplier > maxMult {
+			maxMult = v.ChannelMultiplier
+		}
 		_, _ = db.DB.ExecContext(ctx, `
 			INSERT INTO videos (
 				id, person_id, discovery_id, external_video_id, platform, title, channel_name,
@@ -757,17 +802,16 @@ func RefreshDiscoveryYouTubeMetrics(ctx context.Context, discoveryID string) (in
 			v.ChannelBaselineViews, v.ThumbnailURL)
 	}
 
-	top := videos[0]
 	newStage := stage
-	if top.ViewsPerHour >= 12000 || (top.Views >= 350000 && top.ChannelMultiplier >= 3.5) {
+	if maxVPH >= 12000 || (maxViews >= 350000 && maxMult >= 3.5) {
 		newStage = "Major Viral Opportunity"
-	} else if top.ViewsPerHour >= 3500 || (top.Views >= 100000 && top.ChannelMultiplier >= 2.0) {
+	} else if maxVPH >= 3500 || (maxViews >= 100000 && maxMult >= 2.0) {
 		newStage = "Accelerating"
-	} else if top.ViewsPerHour >= 500 || top.Views >= 15000 || cov >= 3 {
+	} else if maxVPH >= 500 || maxViews >= 15000 || cov >= 3 {
 		newStage = "Emerging"
 	}
 
-	_ = RecordTrendObservation(ctx, discoveryID, personID, newStage, top.Views, top.ViewsPerHour, top.ViewsPerDay, top.ChannelMultiplier, cov)
+	_ = RecordTrendObservation(ctx, discoveryID, personID, newStage, maxViews, maxVPH, maxVPD, maxMult, cov)
 	_, _ = db.DB.ExecContext(ctx, `UPDATE discoveries SET trend_stage = $2, updated_at = NOW() WHERE id = $1`, discoveryID, newStage)
 
 	return len(videos), nil
