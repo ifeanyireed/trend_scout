@@ -3,6 +3,8 @@ package agents
 import (
 	"strings"
 	"testing"
+
+	"trendscout-backend/internal/connectors"
 )
 
 func TestDynamicBiographicalDomainDetection(t *testing.T) {
@@ -296,6 +298,39 @@ func TestVideoPackagingDescriptionTagsAndHashtags(t *testing.T) {
 		if !strings.HasPrefix(h, "#") || strings.Contains(h, " ") {
 			t.Fatalf("invalid hashtag format: %q", h)
 		}
+	}
+}
+
+func TestCompetitiveBriefSynthesisAndPromptFormatting(t *testing.T) {
+	dom := domainSportsCompetition()
+	studies := []connectors.CompetitorVideoStudy{
+		{
+			VideoID:             "41vUn1McRjE",
+			Title:               "59 Seconds With Neeraj Chopra #shorts",
+			ChannelName:         "Curly Tales",
+			URL:                 "https://www.youtube.com/watch?v=41vUn1McRjE",
+			Views:               13_806_175,
+			ViewsPerHour:        435,
+			ChannelMultiplier:   41.5,
+			EngagementRate:      6.21,
+			VideoFormat:         "Short (<60s)",
+			DurationSeconds:     59,
+			TranscriptExcerpt:   "Growing up in Panipat nobody thought javelin would change everything.",
+			TranscriptAvailable: true,
+			TopComments:         []string{"[1400 likes] Someone needs to make a full documentary on his injury comeback!"},
+		},
+	}
+
+	brief := BuildDeterministicCompetitiveBrief("Neeraj Chopra", dom, studies, 20)
+	if brief.AnalyzedVideoCount != 1 || brief.TranscribedVideoCount != 1 || brief.CommentsAnalyzedCount != 1 {
+		t.Fatalf("unexpected study counters: %+v", brief)
+	}
+	if !strings.Contains(brief.FormatAdvantage, "Short") || brief.OutperformanceStrategy == "" {
+		t.Fatalf("expected format gap advantage & strategy, got %+v", brief)
+	}
+	prompt := FormatCompetitiveBriefForPrompt(&brief)
+	if !strings.Contains(prompt, "OUTPERFORMANCE STRATEGY:") || !strings.Contains(prompt, "injury comeback") {
+		t.Fatalf("formatted prompt missing strategy or viewer comment signal:\n%s", prompt)
 	}
 }
 

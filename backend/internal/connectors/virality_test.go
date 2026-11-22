@@ -89,6 +89,20 @@ func TestYouTubeDurationFormatAndEngagement(t *testing.T) {
 	}
 }
 
+func TestYouTubeTranscriptExtractionAndParsing(t *testing.T) {
+	sampleWatchHTML := `{"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=abc12345678\u0026lang=es","languageCode":"es"},{"baseUrl":"https://www.youtube.com/api/timedtext?v=abc12345678\u0026lang=en","languageCode":"en"}]}}}`
+	u := ExtractCaptionTrackURL(sampleWatchHTML)
+	if !strings.Contains(u, "lang=en") || strings.Contains(u, `\u0026`) {
+		t.Fatalf("expected unescaped English caption track URL, got %q", u)
+	}
+
+	sampleXML := `<transcript><text start="0.0" dur="3.2">Nobody expected him to win.</text><text start="3.2" dur="4.1">He grew up training on a dirt field &amp; broke the record.</text></transcript>`
+	parsed := ParseYouTubeCaptionXML(sampleXML)
+	if parsed != "Nobody expected him to win. He grew up training on a dirt field & broke the record." {
+		t.Fatalf("unexpected parsed transcript: %q", parsed)
+	}
+}
+
 func TestLiveYouTubeDataAPIV3(t *testing.T) {
 	if os.Getenv("RUN_LIVE_YT_TEST") != "1" {
 		t.Skip("set RUN_LIVE_YT_TEST=1 to verify live YouTube Data API v3 lookup")

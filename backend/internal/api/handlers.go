@@ -999,6 +999,17 @@ func RegisterRoutes(mux *http.ServeMux) {
 				"usedGemini":         seo.UsedGemini,
 			})
 
+		case "competitive-brief/generate":
+			brief, err := agents.GenerateProjectCompetitiveBrief(ctx, projectID)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]any{
+				"ok":               true,
+				"competitiveBrief": brief,
+			})
+
 		case "seo":
 			if r.Method == http.MethodPut {
 				var req struct {
@@ -1863,16 +1874,16 @@ func getProjectWorkspace(ctx interface {
 	Err() error
 	Value(key any) any
 }, projectID string) (map[string]any, error) {
-	var pID, dID, title, slug, status, style, ar, thumb, ytTitlesStr, ytDesc, ytTagsStr, ytHashtagsStr, music, ua string
+	var pID, dID, title, slug, status, style, ar, thumb, ytTitlesStr, ytDesc, ytTagsStr, ytHashtagsStr, compBriefStr, music, ua string
 	var durMin, imgInt int
 	err := db.DB.QueryRowContext(ctx, `
 		SELECT person_id, COALESCE(discovery_id, ''), title, slug, status, target_duration_minutes,
 		       visual_style, aspect_ratio, image_interval_seconds, COALESCE(thumbnail_concept, ''),
 		       COALESCE(youtube_titles_json, '[]'), COALESCE(youtube_description, ''),
 		       COALESCE(youtube_tags_json, '[]'), COALESCE(youtube_hashtags_json, '[]'),
-		       COALESCE(music_suggestions, ''), updated_at::text
+		       COALESCE(competitive_brief_json, '{}'), COALESCE(music_suggestions, ''), updated_at::text
 		FROM documentary_projects WHERE id = $1
-	`, projectID).Scan(&pID, &dID, &title, &slug, &status, &durMin, &style, &ar, &imgInt, &thumb, &ytTitlesStr, &ytDesc, &ytTagsStr, &ytHashtagsStr, &music, &ua)
+	`, projectID).Scan(&pID, &dID, &title, &slug, &status, &durMin, &style, &ar, &imgInt, &thumb, &ytTitlesStr, &ytDesc, &ytTagsStr, &ytHashtagsStr, &compBriefStr, &music, &ua)
 	if err != nil {
 		return nil, err
 	}
@@ -1881,6 +1892,10 @@ func getProjectWorkspace(ctx interface {
 	_ = json.Unmarshal([]byte(ytTitlesStr), &ytTitles)
 	_ = json.Unmarshal([]byte(ytTagsStr), &ytTags)
 	_ = json.Unmarshal([]byte(ytHashtagsStr), &ytHashtags)
+	var compBrief map[string]any
+	if compBriefStr != "" && compBriefStr != "{}" {
+		_ = json.Unmarshal([]byte(compBriefStr), &compBrief)
+	}
 	if ytTitles == nil {
 		ytTitles = []string{}
 	}
@@ -2079,6 +2094,7 @@ func getProjectWorkspace(ctx interface {
 			"youtubeTags":           ytTags,
 			"youtubeHashtags":       ytHashtags,
 			"tagsCharCount":         agents.TagsTotalChars(ytTags),
+			"competitiveBrief":      compBrief,
 			"musicSuggestions":      music,
 			"updatedAt":             ua,
 		},

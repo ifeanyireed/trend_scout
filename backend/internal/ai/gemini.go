@@ -473,7 +473,70 @@ func formatClockMMSS(sec int) string {
 	return fmt.Sprintf("%d:%02d", sec/60, sec%60)
 }
 
-// GenerateDocumentaryScriptWithGemini executes a 2-stage prestige investigative documentary architecture:
+type CompetitivePositioningBriefAI struct {
+	WinningHooks            []string `json:"winningHooks"`
+	WhatsWorking            []string `json:"whatsWorking"`
+	AudienceQuestions       []string `json:"audienceQuestions"`
+	CompetitorBlindSpots    []string `json:"competitorBlindSpots"`
+	OutperformanceStrategy  string   `json:"outperformanceStrategy"`
+	RecommendedColdOpenEdge string   `json:"recommendedColdOpenEdge"`
+	FormatAdvantage         string   `json:"formatAdvantage"`
+}
+
+// AnalyzeCompetitorsForPositioningWithGemini executes Stage 0 pre-script competitive analysis:
+// studies transcripts, outlier multipliers, formats, and top viewer comments from competing YouTube videos
+// to determine what is working and how to position our documentary to outperform them.
+func AnalyzeCompetitorsForPositioningWithGemini(
+	ctx context.Context,
+	personName string,
+	biographicalField string,
+	competitorDataJSON string,
+	targetDurationMinutes int,
+) (*CompetitivePositioningBriefAI, error) {
+	if !HasGeminiKey(ctx) {
+		return nil, fmt.Errorf("gemini api key not set")
+	}
+
+	sysPrompt := `You are TrendScout Studio's Lead YouTube Competitive Strategist & Documentary Showrunner.
+Before writing a documentary script, you audit the highest-performing competing YouTube videos (including their real transcripts, view velocity, channel-relative outlier multipliers, video durations/formats, and top viewer comments).
+YOUR GOAL:
+1. Identify EXACTLY what hooks, narrative framing, emotional tension, or curiosity gaps made the highest-outlier videos outperform their channel average.
+2. Mine top viewer comments for unanswered questions, recurring debates, skeptical counter-arguments, and emotional resonance points.
+3. Expose competitor blind spots (e.g., Shorts-only coverage, surface-level highlight reels, missing formative context, unattributed claims, skipped turning points or post-breakthrough reckoning).
+4. Formulate a concrete, original OUTPERFORMANCE POSITIONING STRATEGY for a prestige, source-grounded ` + fmt.Sprintf("%d-minute", targetDurationMinutes) + ` documentary paced at <=7 seconds per visual cut.
+CRITICAL: NEVER recommend plagiarizing or copying competitor lines. Focus on structural superiority, deeper verified journalism, sharper Cold Open tension, and answering what viewers are actively asking.`
+
+	userPrompt := fmt.Sprintf(`Subject: %s
+Biographical Field: %s
+Target Documentary Runtime: %d minutes
+
+Competing YouTube Videos (Metrics, Transcripts & Top Viewer Comments):
+%s
+
+Return strictly valid JSON matching:
+{
+  "winningHooks": ["Specific hook pattern driving high CTR/retention in competing outlier videos"],
+  "whatsWorking": ["Specific narrative/structural/emotional element driving engagement and outlier views"],
+  "audienceQuestions": ["Specific unanswered question or debate raised by viewers in comments"],
+  "competitorBlindSpots": ["Specific gap or weakness across existing YouTube videos we can exploit"],
+  "outperformanceStrategy": "2-3 concrete sentences detailing how our documentary will outperform all competing videos in retention, authority, and depth.",
+  "recommendedColdOpenEdge": "1-2 sentences prescribing how our 0:00-1:30 Cold Open beats existing hooks.",
+  "formatAdvantage": "1-2 sentences explaining how our long-form <=7s visual pacing exploits the format gap (e.g., vs Shorts or quick clips)."
+}`, personName, biographicalField, targetDurationMinutes, competitorDataJSON)
+
+	var out CompetitivePositioningBriefAI
+	if err := CallGeminiJSONWithOptions(ctx, sysPrompt, userPrompt, &out, GeminiCallOptions{
+		Temperature:     0.3,
+		MaxOutputTokens: 2048,
+		Timeout:         25 * time.Second,
+	}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GenerateDocumentaryScriptWithGemini executes a 2-stage prestige investigative documentary architecture
+// (optionally informed by Stage 0 YouTube Competitive Positioning Intelligence):
 // Stage 1: Dynamic biographical domain analysis + 7-chapter blueprint scaled to targetDurationMinutes.
 // Stage 2: Concurrent chapter-by-chapter shot writer enforcing <= 7 seconds per visual cut.
 func GenerateDocumentaryScriptWithGemini(
@@ -488,6 +551,7 @@ func GenerateDocumentaryScriptWithGemini(
 	biography string,
 	claimsText string,
 	assessmentSummary string,
+	competitiveBriefText string,
 ) (*DocumentaryScriptAI, error) {
 	if !HasGeminiKey(ctx) {
 		return nil, fmt.Errorf("gemini api key not set")
@@ -544,6 +608,9 @@ Exact Chapter Time Windows:
 Subject Assessment & Context:
 %s
 
+Pre-Script YouTube Competitive Positioning Brief (Outperform these competing videos without copying them — resolve audience questions & exploit blind spots):
+%s
+
 Verified Biography Dossier:
 %s
 
@@ -570,7 +637,7 @@ Return strictly valid JSON matching:
       "targetShotCount": 14
     }
   ]
-}`, personName, category, country, projectTitle, targetDurationMinutes, totalSeconds, windowSpec.String(), assessmentSummary, biography, claimsText)
+}`, personName, category, country, projectTitle, targetDurationMinutes, totalSeconds, windowSpec.String(), assessmentSummary, competitiveBriefText, biography, claimsText)
 
 	var outline DocumentaryOutlineAI
 	if err := CallGeminiJSONWithOptions(ctx, outlineSys, outlineUser, &outline, GeminiCallOptions{
@@ -641,6 +708,7 @@ REQUIRED SHOT COUNT: Exactly %d to %d shots (every shot MUST be 4 to 7 seconds; 
 Chapter Narrative Arc: %s
 Chapter Spatial Motif: %s
 Allocated Verified Facts for This Chapter: %s
+YouTube Competitive Positioning Directive: %s
 
 Full Subject Biography & Claims Reference (use ONLY real details grounded here):
 %s
@@ -672,7 +740,7 @@ Return strictly valid JSON matching:
 				personName, outline.DetectedField, outline.CentralQuestion, outline.RecurringMotif, style,
 				chPlan.ChapterNumber, chPlan.Title, formatClockMMSS(chPlan.StartSeconds), formatClockMMSS(chPlan.EndSeconds), chDur,
 				targetShots, targetShots+4,
-				chPlan.NarrativeArc, chPlan.SpatialMotif, string(factsJSON),
+				chPlan.NarrativeArc, chPlan.SpatialMotif, string(factsJSON), competitiveBriefText,
 				biography, claimsText,
 				chPlan.ChapterNumber, chPlan.Title, chPlan.StartSeconds, chPlan.EndSeconds)
 
@@ -770,7 +838,8 @@ type VideoPackagingAI struct {
 }
 
 // GenerateVideoPackagingWithGemini creates a high-CTR YouTube documentary description (with chapter timestamps),
-// high-performing SEO tags (kept cleanly within YouTube's 500-char tag budget), and hashtags for an opportunity/project.
+// high-performing SEO tags (kept cleanly within YouTube's 500-char tag budget), and hashtags for an opportunity/project,
+// optionally guided by Stage 0 YouTube Competitive Positioning Intelligence.
 func GenerateVideoPackagingWithGemini(
 	ctx context.Context,
 	personName string,
@@ -780,6 +849,7 @@ func GenerateVideoPackagingWithGemini(
 	achievement string,
 	biography string,
 	chapterTimestamps string,
+	competitiveBrief string,
 	targetDurationMinutes int,
 ) (*VideoPackagingAI, error) {
 	if !HasGeminiKey(ctx) {
@@ -789,20 +859,25 @@ func GenerateVideoPackagingWithGemini(
 	sysPrompt := `You are TrendScout Studio's YouTube Documentary Growth & SEO Strategist.
 Write high-performing, search-optimized YouTube packaging for a prestige investigative biographical documentary.
 RULES:
-1. VIDEO DESCRIPTION:
+1. COMPETITIVE OUTPERFORMANCE: If a YouTube Competitive Positioning Brief is provided, engineer the titles, above-the-fold description hook, tags, and hashtags to outperform the competing videos' hooks, capture the exact viewer questions from comments, and exploit competitor blind spots/format gaps—WITHOUT copying competitor titles or phrasing.
+2. VIDEO DESCRIPTION:
    - Open with a sharp 2-sentence above-the-fold hook optimized for YouTube search & browse previews (include subject's full name and core turning point naturally in the first 150 characters).
    - Follow with a concise 1-paragraph factual editorial overview grounded strictly in the provided dossier.
    - Include a clean "Chapters:" timestamp block using the exact provided chapter timestamps (if provided).
    - Include a brief journalistic attribution note ("Every milestone in this film is grounded in public records and attributed reporting.") and a subtle subscribe/discussion prompt.
    - End with 3–5 primary hashtags on the final line.
-2. HIGH-PERFORMING TAGS (16–22 tags):
+3. HIGH-PERFORMING TAGS (16–22 tags):
    - Mix exact-match subject name, biographical field/niche keywords, high-intent documentary search phrases ("<name> documentary", "<name> true story", "<name> biography"), event/institution keywords, and broader discovery terms.
    - Total comma-separated length of all tags MUST stay <= 480 characters (YouTube's strict 500-char tag box limit).
    - No leading # symbols on tags, no duplicate tags.
-3. HASHTAGS (8–12 hashtags):
+4. HASHTAGS (8–12 hashtags):
    - Every hashtag MUST begin with # and contain no spaces or punctuation (CamelCase e.g. #Documentary, #TrueStory, #Biography, plus subject & domain-specific tags).
-4. RECOMMENDED TITLES (3 titles):
+5. RECOMMENDED TITLES (3 titles):
    - High-CTR prestige documentary titles (55–72 characters, zero clickbait spam).`
+
+	if strings.TrimSpace(competitiveBrief) == "" {
+		competitiveBrief = "No competing YouTube brief cached yet; optimize for definitive prestige biographical search intent."
+	}
 
 	userPrompt := fmt.Sprintf(`Subject: %s
 Biographical Field: %s
@@ -811,6 +886,9 @@ Target Duration: %d minutes
 Latest Headline: %s
 Core Breakthrough / Turning Point: %s
 Chapter Timestamps:
+%s
+
+YouTube Competitive Positioning Brief (Outperform these competitors in CTR & search positioning):
 %s
 
 Biographical Dossier Extract:
@@ -822,7 +900,7 @@ Return strictly valid JSON matching:
   "videoDescription": "Full formatted YouTube video description with Chapters and closing hashtags",
   "tags": ["exact subject name", "subject documentary", "long tail seo tag"],
   "hashtags": ["#SubjectName", "#Documentary", "#Biography"]
-}`, personName, biographicalField, country, targetDurationMinutes, headline, achievement, chapterTimestamps, biography)
+}`, personName, biographicalField, country, targetDurationMinutes, headline, achievement, chapterTimestamps, competitiveBrief, biography)
 
 	var out VideoPackagingAI
 	if err := CallGeminiJSONWithOptions(ctx, sysPrompt, userPrompt, &out, GeminiCallOptions{
@@ -845,7 +923,7 @@ func GenerateScriptWithGemini(
 	biography string,
 	claimsText string,
 ) (string, []ScriptActAI, error) {
-	doc, err := GenerateDocumentaryScriptWithGemini(ctx, personName, "", "", projectTitle, targetDurationMinutes, style, "auto", biography, claimsText, "")
+	doc, err := GenerateDocumentaryScriptWithGemini(ctx, personName, "", "", projectTitle, targetDurationMinutes, style, "auto", biography, claimsText, "", "")
 	if err != nil {
 		return "", nil, err
 	}

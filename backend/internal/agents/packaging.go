@@ -315,6 +315,21 @@ func buildChapterTimestampsForProject(ctx context.Context, projectID string, dom
 	return strings.TrimSpace(cb.String())
 }
 
+func loadCompetitiveBriefPromptForPackaging(ctx context.Context, projectID, personID, discoveryID, personName string, domain BiographicalDomainProfile, targetDur int) string {
+	if projectID != "" {
+		var raw string
+		if err := db.DB.QueryRowContext(ctx, `SELECT COALESCE(competitive_brief_json, '{}') FROM documentary_projects WHERE id = $1`, projectID).Scan(&raw); err == nil && raw != "" && raw != "{}" {
+			var parsed CompetitivePositioningBrief
+			if json.Unmarshal([]byte(raw), &parsed) == nil && (parsed.OutperformanceStrategy != "" || parsed.AnalyzedVideoCount > 0) {
+				return FormatCompetitiveBriefForPrompt(&parsed)
+			}
+		}
+	}
+	// If no brief cached on a project yet, build one directly from tracked YouTube videos/comments for this opportunity
+	_, promptStr := BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDur)
+	return promptStr
+}
+
 // GenerateOpportunityVideoPackaging builds and persists YouTube video description, high-performing tags,
 // and hashtags for a discovery opportunity (and syncs to any linked documentary project).
 func GenerateOpportunityVideoPackaging(ctx context.Context, discoveryID string) (*VideoSEOContent, error) {
@@ -346,7 +361,8 @@ func GenerateOpportunityVideoPackaging(ctx context.Context, discoveryID string) 
 
 	domain := ResolveBiographicalDomain(category, bio, summary, headline, "auto")
 	chapterTS := buildChapterTimestampsForProject(ctx, linkedProjID, domain, targetDur)
-	seo := generateVideoSEOWithFallback(ctx, personName, domain, country, headline, achievement, summary, bio, chapterTS, targetDur)
+	compBriefPrompt := loadCompetitiveBriefPromptForPackaging(ctx, linkedProjID, personID, discoveryID, personName, domain, targetDur)
+	seo := generateVideoSEOWithFallback(ctx, personName, domain, country, headline, achievement, summary, bio, chapterTS, compBriefPrompt, targetDur)
 
 	tagsJSON, _ := json.Marshal(seo.Tags)
 	hashtagsJSON, _ := json.Marshal(seo.Hashtags)
@@ -405,7 +421,8 @@ func GenerateProjectVideoPackaging(ctx context.Context, projectID string) (*Vide
 
 	domain := ResolveBiographicalDomain(category, bio, summary, headline, "auto")
 	chapterTS := buildChapterTimestampsForProject(ctx, projectID, domain, targetDur)
-	seo := generateVideoSEOWithFallback(ctx, personName, domain, country, headline, achievement, summary, bio, chapterTS, targetDur)
+	compBriefPrompt := loadCompetitiveBriefPromptForPackaging(ctx, projectID, personID, discoveryID, personName, domain, targetDur)
+	seo := generateVideoSEOWithFallback(ctx, personName, domain, country, headline, achievement, summary, bio, chapterTS, compBriefPrompt, targetDur)
 
 	tagsJSON, _ := json.Marshal(seo.Tags)
 	hashtagsJSON, _ := json.Marshal(seo.Hashtags)
@@ -442,6 +459,7 @@ func generateVideoSEOWithFallback(
 	summary string,
 	bio string,
 	chapterTS string,
+	competitiveBrief string,
 	targetDur int,
 ) VideoSEOContent {
 	fallback := BuildDeterministicVideoPackaging(personName, domain, country, headline, achievement, summary, chapterTS, targetDur)
@@ -454,7 +472,7 @@ func generateVideoSEOWithFallback(
 		bioInput = bioInput[:4500]
 	}
 	aiRes, err := ai.GenerateVideoPackagingWithGemini(
-		ctx, personName, domain.Label, country, headline, achievement, bioInput, chapterTS, targetDur,
+		ctx, personName, domain.Label, country, headline, achievement, bioInput, chapterTS, competitiveBrief, targetDur,
 	)
 	if err != nil || aiRes == nil {
 		return fallback

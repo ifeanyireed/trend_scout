@@ -643,6 +643,7 @@ ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_format TEXT NOT NULL DEFAULT '
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS engagement_rate DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS channel_baseline_views DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE documentary_projects ADD COLUMN IF NOT EXISTS competitive_brief_json TEXT NOT NULL DEFAULT '{}';
 `
 	_, err := conn.ExecContext(ctx, schema)
 	return err

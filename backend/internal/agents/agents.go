@@ -1311,6 +1311,10 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 	}
 
 	domain := ResolveBiographicalDomain(category, bio, summary, headline, biographicalField)
+
+	// STAGE 0: Pre-Script YouTube Competitor Transcription, Comment Mining & Outperformance Positioning Brief
+	_, competitiveBriefPrompt := BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDurationMinutes)
+
 	openingHook, sections := BuildDeterministicDocumentaryScript(bioInput, domain, targetDurationMinutes)
 
 	getClaim := func(idx int) ScriptClaimRef {
@@ -1320,7 +1324,7 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 		return claims[idx%len(claims)]
 	}
 
-	// Dynamic 2-stage Google Gemini AI Generation if key is active
+	// Dynamic 2-stage Google Gemini AI Generation (informed by Stage 0 YouTube Competitive Positioning Brief)
 	usedGemini := false
 	if ai.HasGeminiKey(ctx) {
 		var claimsBuilder strings.Builder
@@ -1332,7 +1336,7 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 
 		aiDoc, errAI := ai.GenerateDocumentaryScriptWithGemini(
 			ctx, personName, category, country, projectTitle, targetDurationMinutes,
-			style, biographicalField, bio, claimsBuilder.String(), assessmentSummary,
+			style, biographicalField, bio, claimsBuilder.String(), assessmentSummary, competitiveBriefPrompt,
 		)
 		if errAI == nil && aiDoc != nil && len(aiDoc.Chapters) > 0 {
 			usedGemini = true

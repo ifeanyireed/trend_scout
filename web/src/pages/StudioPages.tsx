@@ -296,6 +296,7 @@ export const ProductionStudioPage: React.FC = () => {
   const [ytTagsInput, setYtTagsInput] = useState('');
   const [ytHashtagsInput, setYtHashtagsInput] = useState('');
   const [seoBusy, setSeoBusy] = useState(false);
+  const [briefBusy, setBriefBusy] = useState(false);
   const [seoSaved, setSeoSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copiedId, setCopiedId] = useState('');
@@ -480,6 +481,16 @@ export const ProductionStudioPage: React.FC = () => {
       loadWorkspace(proj.id);
     } finally {
       setSeoBusy(false);
+    }
+  };
+
+  const handleGenerateCompetitiveBrief = async () => {
+    setBriefBusy(true);
+    try {
+      await apiFetch(`/api/projects/${proj.id}/competitive-brief/generate`, { method: 'POST', body: '{}' });
+      loadWorkspace(proj.id);
+    } finally {
+      setBriefBusy(false);
     }
   };
 
@@ -765,7 +776,128 @@ export const ProductionStudioPage: React.FC = () => {
 
       {/* TAB 2: SCRIPT EDITOR */}
       {activeTab === 'script' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="space-y-6">
+          {/* STAGE 0: PRE-SCRIPT YOUTUBE COMPETITOR TRANSCRIPT & OUTPERFORMANCE BRIEF */}
+          <div className="nexa-card rounded-3xl p-6 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="px-2.5 py-0.5 rounded-full bg-rose-500/10 text-rose-500 border border-rose-500/25 text-[10px] font-extrabold uppercase">
+                    Stage 0 • Pre-Script Intelligence
+                  </span>
+                  {proj.competitiveBrief?.analyzedVideoCount > 0 && (
+                    <>
+                      <span className="px-2.5 py-0.5 rounded-full bg-nexa-bg-base border border-nexa-border text-[10px] font-bold text-nexa-text-secondary">
+                        {proj.competitiveBrief.analyzedVideoCount} Videos Studied
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 text-[10px] font-extrabold">
+                        {proj.competitiveBrief.transcribedVideoCount || 0} Transcribed
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-nexa-brand/10 text-nexa-brand border border-nexa-brand/20 text-[10px] font-extrabold">
+                        {proj.competitiveBrief.commentsAnalyzedCount || 0} Viewer Comments Mined
+                      </span>
+                    </>
+                  )}
+                </div>
+                <h2 className="text-base font-black text-display text-nexa-text-primary mt-1.5">
+                  YouTube Competitor Transcript Analysis &amp; Outperformance Strategy
+                </h2>
+                <p className="text-xs text-nexa-text-muted mt-0.5">
+                  Automatically transcribes top competing YouTube videos &amp; mines viewer comments before writing so this script outperforms them on hooks, depth, and retention.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleGenerateCompetitiveBrief}
+                disabled={briefBusy || busy}
+                className="px-4 py-2 rounded-full border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-xs font-extrabold flex items-center gap-1.5 cursor-pointer shrink-0 w-fit"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${briefBusy ? 'animate-spin' : ''}`} />
+                {briefBusy ? 'Transcribing & Studying Videos...' : proj.competitiveBrief ? 'Refresh Competitor Study' : 'Run Competitor Study'}
+              </button>
+            </div>
+
+            {proj.competitiveBrief ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                  <div className="p-4 rounded-2xl bg-nexa-brand/5 border border-nexa-brand/20 space-y-1">
+                    <div className="text-[10px] font-extrabold uppercase text-nexa-brand">Outperformance Strategy</div>
+                    <p className="text-xs text-nexa-text-primary leading-relaxed">
+                      {proj.competitiveBrief.outperformanceStrategy}
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/20 space-y-1">
+                    <div className="text-[10px] font-extrabold uppercase text-emerald-500">Cold Open Edge (0:00 – 1:30)</div>
+                    <p className="text-xs text-nexa-text-primary leading-relaxed">
+                      {proj.competitiveBrief.recommendedColdOpenEdge}
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-purple-500/5 border border-purple-500/20 space-y-1">
+                    <div className="text-[10px] font-extrabold uppercase text-purple-500">Format Advantage</div>
+                    <p className="text-xs text-nexa-text-primary leading-relaxed">
+                      {proj.competitiveBrief.formatAdvantage}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="p-4 rounded-2xl bg-nexa-bg-base border border-nexa-border space-y-2">
+                    <div className="text-[11px] font-extrabold uppercase text-emerald-500">What&apos;s Working in Top Outliers</div>
+                    <ul className="space-y-1.5 text-xs text-nexa-text-secondary">
+                      {(proj.competitiveBrief.winningHooks || proj.competitiveBrief.whatsWorking || []).map((item: string, idx: number) => (
+                        <li key={idx} className="leading-relaxed">• {item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-nexa-bg-base border border-nexa-border space-y-2">
+                    <div className="text-[11px] font-extrabold uppercase text-amber-500">Competitor Blind Spots to Exploit</div>
+                    <ul className="space-y-1.5 text-xs text-nexa-text-secondary">
+                      {(proj.competitiveBrief.competitorBlindSpots || []).map((item: string, idx: number) => (
+                        <li key={idx} className="leading-relaxed">• {item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-nexa-bg-base border border-nexa-border space-y-2">
+                    <div className="text-[11px] font-extrabold uppercase text-nexa-brand">Unanswered Viewer Questions</div>
+                    <ul className="space-y-1.5 text-xs text-nexa-text-secondary">
+                      {(proj.competitiveBrief.audienceQuestions || []).map((item: string, idx: number) => (
+                        <li key={idx} className="leading-relaxed">• {item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+
+                {(proj.competitiveBrief.studiedVideos || []).length > 0 && (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {(proj.competitiveBrief.studiedVideos || []).map((sv: any, idx: number) => (
+                      <a
+                        key={idx}
+                        href={sv.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3 py-1.5 rounded-full bg-nexa-bg-base border border-nexa-border hover:border-nexa-brand text-[11px] font-bold text-nexa-text-primary inline-flex items-center gap-2 transition"
+                      >
+                        <span className="truncate max-w-[220px]">{sv.title}</span>
+                        <span className="text-emerald-500 font-extrabold">{Number(sv.channelMultiplier || 1).toFixed(1)}x</span>
+                        {sv.transcriptAvailable && (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-500 text-[9px] font-extrabold">
+                            TRANSCRIBED
+                          </span>
+                        )}
+                        <ExternalLink className="w-3 h-3 text-nexa-text-muted shrink-0" />
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="p-4 rounded-2xl border border-dashed border-nexa-border bg-nexa-bg-base/40 text-xs text-nexa-text-secondary">
+                No pre-script competitor study cached yet for this project. Click <strong>Run Competitor Study</strong> above or click <strong>Rerun Script Processing</strong> below to automatically transcribe top YouTube videos, mine viewer comments, and position the script to outperform them.
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 nexa-card rounded-3xl p-6 space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -988,6 +1120,7 @@ export const ProductionStudioPage: React.FC = () => {
                 </div>
               ))}
             </div>
+          </div>
           </div>
         </div>
       )}
