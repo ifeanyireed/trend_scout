@@ -439,36 +439,49 @@ func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCyc
 				return
 			}
 
-			// Compute real velocity & trend stage from live YouTube/Reddit/News signals
-			var viewsTotal int64 = 48000
-			var vph float64 = 1850
-			var chanRel float64 = 2.6
-			indCov := 3
+			// Compute real velocity & trend stage strictly from live YouTube/Reddit/Google Trends telemetry (zero placeholder inflation)
+			var viewsTotal int64 = 0
+			var vph float64 = 0
+			var chanRel float64 = 1.0
+			indCov := 1 // 1 for the primary discovering source
 			if cand.Video != nil && cand.Video.Views > 0 {
 				viewsTotal = cand.Video.Views
 				vph = cand.Video.ViewsPerHour
 				chanRel = cand.Video.ChannelMultiplier
-				indCov += 3
+				indCov++
+				if cand.Video.CompetingVideosCount >= 3 {
+					indCov++
+				}
 			}
 			if cand.Social != nil && cand.Social.Upvotes > 0 {
-				if cand.Video == nil {
-					viewsTotal = cand.Social.Upvotes * 42
-					vph = math.Max(450, math.Round(float64(cand.Social.Upvotes)*1.9))
-					chanRel = math.Round((2.0+math.Log10(math.Max(10, float64(cand.Social.Upvotes)))*0.85)*10) / 10
+				ageHrs := cand.Social.AgeHours
+				if ageHrs <= 0 {
+					ageHrs = 24.0
 				}
-				indCov += 2
+				if cand.Video == nil {
+					viewsTotal = cand.Social.Upvotes + cand.Social.Comments
+					vph = math.Round(float64(cand.Social.Upvotes) / ageHrs)
+				}
+				indCov++
+			}
+			if cand.SearchTraffic > 0 {
+				if viewsTotal == 0 {
+					viewsTotal = cand.SearchTraffic
+					vph = math.Round(float64(cand.SearchTraffic) / 24.0)
+				}
+				indCov++
 			}
 			if cand.WikiExtract != "" {
-				indCov += 2
+				indCov++
 			}
 
-			stage := "Emerging"
+			stage := "Early Whisper"
 			switch {
-			case vph >= 12000 || (viewsTotal >= 350000 && chanRel >= 4.0):
+			case vph >= 12000 || (viewsTotal >= 350000 && chanRel >= 3.5):
 				stage = "Major Viral Opportunity"
-			case vph >= 3500 || viewsTotal >= 100000:
+			case vph >= 3500 || (viewsTotal >= 100000 && chanRel >= 2.0):
 				stage = "Accelerating"
-			case vph >= 900 || indCov >= 5:
+			case vph >= 500 || viewsTotal >= 15000 || indCov >= 3:
 				stage = "Emerging"
 			default:
 				stage = "Early Whisper"
@@ -587,9 +600,14 @@ func RecordTrendObservation(
 	channelRel float64,
 	indCoverage int,
 ) error {
-	momentum := math.Min(99.0, math.Round(55.0+math.Log10(math.Max(10, viewsPerHour))*10.5+float64(indCoverage)*1.6))
-	saturation := math.Min(85.0, math.Round(float64(indCoverage)*2.8))
-	engagement := math.Min(98.0, math.Round(68.0+channelRel*4.2))
+	momentum := 35.0
+	if viewsPerHour > 0 {
+		momentum = math.Min(99.0, math.Round(42.0+math.Log10(math.Max(1, viewsPerHour))*11.5+math.Min(10.0, (channelRel-1.0)*2.5)+float64(indCoverage)*1.8))
+	} else if viewsTotal > 0 {
+		momentum = math.Min(85.0, math.Round(35.0+math.Log10(math.Max(1, float64(viewsTotal)))*7.5+float64(indCoverage)*1.5))
+	}
+	saturation := math.Min(85.0, math.Round(10.0+float64(indCoverage)*4.0+math.Log10(math.Max(1, float64(viewsTotal)))*3.2))
+	engagement := math.Min(98.0, math.Round(45.0+math.Min(45.0, channelRel*8.0)))
 
 	_, err := db.DB.ExecContext(ctx, `
 		INSERT INTO trend_observations (
@@ -605,9 +623,9 @@ func RecordTrendObservation(
 func RunTrendMonitoringCycle(ctx context.Context) (int, error) {
 	rows, err := db.DB.QueryContext(ctx, `
 		SELECT d.id, d.person_id, p.canonical_name, d.trend_stage, d.independent_coverage_count,
-		       COALESCE((SELECT views_total FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 45000),
-		       COALESCE((SELECT views_per_hour FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 1500),
-		       COALESCE((SELECT channel_relative_perf FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 2.5)
+		       COALESCE((SELECT views_total FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 0),
+		       COALESCE((SELECT views_per_hour FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 0),
+		       COALESCE((SELECT channel_relative_perf FROM trend_observations WHERE discovery_id = d.id ORDER BY observed_at DESC LIMIT 1), 1.0)
 		FROM discoveries d
 		JOIN people p ON p.id = d.person_id
 		WHERE d.status = 'active'
@@ -658,12 +676,14 @@ func RunTrendMonitoringCycle(ctx context.Context) (int, error) {
 		}
 
 		newStage := it.stage
-		if newVph >= 12000 || (newViews >= 350000 && newChan >= 4.0) {
+		if newVph >= 12000 || (newViews >= 350000 && newChan >= 3.5) {
 			newStage = "Major Viral Opportunity"
-		} else if newVph >= 3500 || newViews >= 100000 {
+		} else if newVph >= 3500 || (newViews >= 100000 && newChan >= 2.0) {
 			newStage = "Accelerating"
-		} else if it.stage == "Early Whisper" && (newCov >= 5 || newVph >= 900) {
+		} else if newVph >= 500 || newViews >= 15000 || newCov >= 3 {
 			newStage = "Emerging"
+		} else {
+			newStage = "Early Whisper"
 		}
 		_ = RecordTrendObservation(ctx, it.discID, it.personID, newStage, newViews, newVph, newVph*24, newChan, newCov)
 		_, _ = db.DB.ExecContext(ctx, `
@@ -680,10 +700,13 @@ func RunUnderdogAssessment(ctx context.Context, personID string, discoveryID str
 }
 
 func runUnderdogAssessmentWithOptions(ctx context.Context, personID string, discoveryID string, cand connectors.DiscoveredCandidate, allowGemini bool) error {
-	var ytViews int64 = 285000
-	var ytVPH float64 = 14200
-	var redditUps int64 = 1850
-	var redditComments int64 = 340
+	// Strictly real measured platform signals — zero fabricated defaults
+	var ytViews int64 = 0
+	var ytVPH float64 = 0
+	var chanMult float64 = 1.0
+	var competingDocs int = 0
+	var redditUps int64 = 0
+	var redditComments int64 = 0
 	if cand.Video != nil {
 		if cand.Video.Views > 0 {
 			ytViews = cand.Video.Views
@@ -691,6 +714,10 @@ func runUnderdogAssessmentWithOptions(ctx context.Context, personID string, disc
 		if cand.Video.ViewsPerHour > 0 {
 			ytVPH = cand.Video.ViewsPerHour
 		}
+		if cand.Video.ChannelMultiplier > 0 {
+			chanMult = cand.Video.ChannelMultiplier
+		}
+		competingDocs = cand.Video.CompetingVideosCount
 	}
 	if cand.Social != nil {
 		if cand.Social.Upvotes > 0 {
@@ -700,6 +727,7 @@ func runUnderdogAssessmentWithOptions(ctx context.Context, personID string, disc
 			redditComments = cand.Social.Comments
 		}
 	}
+	searchTraffic := cand.SearchTraffic
 
 	classification := "Strong underdog"
 	origins := fmt.Sprintf("%s began outside traditional elite institutions in %s, relying on resourcefulness, persistence, and self-directed mastery.", cand.PersonName, cand.Category)
@@ -740,31 +768,71 @@ func runUnderdogAssessmentWithOptions(ctx context.Context, personID string, disc
 	} else if strings.Contains(lowerText, "champion") || strings.Contains(lowerText, "gold") || strings.Contains(lowerText, "final") {
 		achSig = 88.0
 	}
-	audMom := math.Min(97.0, math.Round(58.0+math.Log10(math.Max(10, ytVPH))*8.8+math.Log10(math.Max(10, float64(redditUps)))*2.4))
+	// Honest audience momentum strictly from real measured YouTube, Reddit, or Google Trends signals
+	audMom := 38.0
+	if ytVPH > 0 {
+		audMom = math.Min(97.0, math.Round(42.0+math.Log10(math.Max(1, ytVPH))*11.0+math.Min(12.0, math.Max(0, chanMult-1.0)*2.5)))
+	}
+	if redditUps > 0 {
+		redditMom := math.Min(92.0, math.Round(45.0+math.Log10(math.Max(1, float64(redditUps)))*11.0))
+		if redditMom > audMom {
+			audMom = redditMom
+		}
+	}
+	if searchTraffic > 0 {
+		trendsMom := math.Min(94.0, math.Round(44.0+math.Log10(math.Max(1, float64(searchTraffic)))*9.0))
+		if trendsMom > audMom {
+			audMom = trendsMom
+		}
+	}
+
 	docPot := math.Min(96.0, math.Round((uStrength+transScore+achSig)/3.0+2.0))
-	timeScore := 88.0
+	timeScore := 78.0
 	if cand.Platform == "News" || cand.Platform == "Google Trends" || cand.Platform == "Reddit" {
-		timeScore = 92.0
+		timeScore = 90.0
 	}
-	evConf := 78.0
+	evConf := 70.0
 	if cand.WikiExtract != "" {
-		evConf += 14.0
+		evConf += 16.0
 	}
-	if cand.Video != nil {
+	if cand.Video != nil && ytViews > 0 {
+		evConf += 8.0
+	}
+	if cand.Social != nil && redditUps > 0 {
 		evConf += 4.0
 	}
-	satRisk := math.Max(12.0, math.Min(58.0, math.Round(16.0+math.Log10(math.Max(10, float64(ytViews)))*3.2)))
+	evConf = math.Min(98.0, evConf)
+
+	// Saturation risk grounded in actual competing high-view YouTube videos (>=50k views) + top video view scale
+	satRisk := 14.0
+	if competingDocs > 0 || ytViews > 0 {
+		satRisk = math.Max(12.0, math.Min(85.0, math.Round(12.0+float64(competingDocs)*7.5+math.Log10(math.Max(1, float64(ytViews)))*3.0)))
+	}
 	overallScore := math.Round((uStrength*0.20+transScore*0.14+achSig*0.16+audMom*0.16+docPot*0.14+timeScore*0.10+evConf*0.10-satRisk*0.04)*10) / 10
+
+	momRationale := "Early-stage signal detected with no high-velocity YouTube/Reddit breakout measured yet."
+	if ytVPH > 0 {
+		momRationale = fmt.Sprintf("Measured YouTube velocity: %.0f views/hr (%d views, %.1fx vs. channel baseline).", ytVPH, ytViews, chanMult)
+	} else if searchTraffic > 0 {
+		momRationale = fmt.Sprintf("Measured Google Trends breakout volume: %d+ searches.", searchTraffic)
+	} else if redditUps > 0 {
+		momRationale = fmt.Sprintf("Measured Reddit breakout engagement: %d upvotes (%d comments).", redditUps, redditComments)
+	}
+
+	satRationale := "Low documentary saturation — no competing 50k+ view videos found on YouTube search."
+	if competingDocs > 0 {
+		satRationale = fmt.Sprintf("%d competing YouTube videos with 50k+ views detected (top video: %d views).", competingDocs, ytViews)
+	}
 
 	rationale := map[string]string{
 		"underdog_strength":        fmt.Sprintf("Evaluated from live %s coverage and biographical adversity signals.", cand.Platform),
 		"transformation_score":     "Narrative arc derived from documented career milestones and breakthrough trajectory.",
 		"achievement_significance": fmt.Sprintf("Breakthrough headline verified via %s.", cand.Publisher),
-		"audience_momentum":        fmt.Sprintf("Live platform velocity: ~%.0f views/hr (%d total views) and social traction.", ytVPH, ytViews),
+		"audience_momentum":        momRationale,
 		"documentary_potential":    "Chronological milestones and visual storytelling suitability for 15–25 minute documentary.",
 		"timeliness_score":         fmt.Sprintf("Detected live on %s (%s).", cand.Platform, cand.EventDate),
 		"evidence_confidence":      "Cross-referenced across live news/social feed and Wikipedia biographical records.",
-		"saturation_risk":          "Estimated from current video volume vs. long-form biographical documentary supply.",
+		"saturation_risk":          satRationale,
 	}
 
 	// Dynamic Google Gemini AI Assessment if API key is active & healthy (bounded timeout)
