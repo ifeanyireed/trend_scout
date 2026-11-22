@@ -153,6 +153,7 @@ export const SettingsPage: React.FC = () => {
   const [showYoutubeKey, setShowYoutubeKey] = useState(false);
   const [testingAI, setTestingAI] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<any>(null);
+  const [liveGroqModels, setLiveGroqModels] = useState<string[]>([]);
 
   useEffect(() => {
     apiFetch('/api/settings').then(setSettings);
@@ -192,6 +193,12 @@ export const SettingsPage: React.FC = () => {
         }),
       });
       setAiTestResult(res);
+      if (Array.isArray(res?.availableModels) && res.availableModels.length > 0) {
+        setLiveGroqModels(res.availableModels);
+      }
+      if (res?.connected && res?.modelUsed) {
+        updateField('ai', 'model', res.modelUsed);
+      }
     } catch (err: any) {
       setAiTestResult({ connected: false, error: err?.message || 'Test request failed' });
     } finally {
@@ -218,12 +225,18 @@ export const SettingsPage: React.FC = () => {
   };
 
   const activeProvider = settings.ai?.provider || 'Groq';
+  const defaultGroqModels = [
+    { value: 'llama-3.3-70b-versatile', label: 'llama-3.3-70b-versatile (Recommended Free Tier)' },
+    { value: 'openai/gpt-oss-120b', label: 'openai/gpt-oss-120b (High-Capacity Reasoning)' },
+    { value: 'openai/gpt-oss-20b', label: 'openai/gpt-oss-20b (Fast Reasoning)' },
+    { value: 'llama-3.1-8b-instant', label: 'llama-3.1-8b-instant (Ultra Fast)' },
+  ];
+  const groqModelList =
+    liveGroqModels.length > 0
+      ? liveGroqModels.map((m) => ({ value: m, label: `${m} (Live on your Groq key)` }))
+      : defaultGroqModels;
   const modelOptions: Record<string, { value: string; label: string }[]> = {
-    Groq: [
-      { value: 'llama-3.3-70b-versatile', label: 'llama-3.3-70b-versatile (Recommended Free Tier)' },
-      { value: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'llama-4-scout-17b-16e-instruct (Fast / High TPM)' },
-      { value: 'llama-3.1-8b-instant', label: 'llama-3.1-8b-instant (Ultra Fast)' },
-    ],
+    Groq: groqModelList,
     OpenRouter: [
       { value: 'meta-llama/llama-3.3-70b-instruct:free', label: 'llama-3.3-70b-instruct:free' },
       { value: 'google/gemma-3-27b-it:free', label: 'gemma-3-27b-it:free' },

@@ -105,7 +105,8 @@ func detectProviderKind(cfg AIConfig) (kind string, label string, baseURL string
 	case strings.HasPrefix(key, "gsk_") || strings.Contains(provLow, "groq"):
 		return "groq", "Groq", "https://api.groq.com/openai/v1/chat/completions", []string{
 			"llama-3.3-70b-versatile",
-			"meta-llama/llama-4-scout-17b-16e-instruct",
+			"openai/gpt-oss-120b",
+			"openai/gpt-oss-20b",
 			"llama-3.1-8b-instant",
 		}
 	case strings.HasPrefix(key, "sk-or-") || strings.Contains(provLow, "openrouter"):
@@ -237,11 +238,126 @@ func CallGeminiJSON(ctx context.Context, systemPrompt string, userPrompt string,
 }
 
 type GeminiTestResult struct {
-	Connected    bool   `json:"connected"`
-	ModelUsed    string `json:"modelUsed"`
-	EndpointType string `json:"endpointType"`
-	LatencyMs    int64  `json:"latencyMs"`
-	Error        string `json:"error,omitempty"`
+	Connected       bool     `json:"connected"`
+	ModelUsed       string   `json:"modelUsed"`
+	EndpointType    string   `json:"endpointType"`
+	LatencyMs       int64    `json:"latencyMs"`
+	AvailableModels []string `json:"availableModels,omitempty"`
+	Error           string   `json:"error,omitempty"`
+}
+
+var (
+	groqModelsMu      sync.Mutex
+	groqModelsCache   []string
+	groqModelsFetched time.Time
+)
+
+func isGroqChatModel(id string) bool {
+	low := strings.ToLower(strings.TrimSpace(id))
+	if low == "" {
+		return false
+	}
+	exclude := []string{"whisper", "tts", "orpheus", "playai", "guard", "safeguard", "embed", "rerank", "moderation", "vision-preview", "distil-whisper"}
+	for _, ex := range exclude {
+		if strings.Contains(low, ex) {
+			return false
+		}
+	}
+	return true
+}
+
+func rankGroqModel(id string) int {
+	low := strings.ToLower(id)
+	switch {
+	case low == "llama-3.3-70b-versatile":
+		return 100
+	case low == "openai/gpt-oss-120b":
+		return 95
+	case strings.Contains(low, "qwen") && !strings.Contains(low, "guard"):
+		return 90
+	case strings.Contains(low, "70b") || strings.Contains(low, "120b"):
+		return 85
+	case low == "openai/gpt-oss-20b":
+		return 80
+	case strings.Contains(low, "llama-4"):
+		return 78
+	case low == "llama-3.1-8b-instant":
+		return 70
+	case strings.Contains(low, "compound"):
+		return 60
+	default:
+		return 50
+	}
+}
+
+// fetchLiveGroqModels queries GET https://api.groq.com/openai/v1/models to discover the exact active
+// chat models enabled on the user's Groq account (cached for 15 minutes).
+func fetchLiveGroqModels(ctx context.Context, apiKey string, forceRefresh bool) []string {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil
+	}
+	groqModelsMu.Lock()
+	if !forceRefresh && len(groqModelsCache) > 0 && time.Since(groqModelsFetched) < 15*time.Minute {
+		out := append([]string(nil), groqModelsCache...)
+		groqModelsMu.Unlock()
+		return out
+	}
+	groqModelsMu.Unlock()
+
+	mCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(mCtx, http.MethodGet, "https://api.groq.com/openai/v1/models", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	client := &http.Client{Timeout: 6 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil
+	}
+	var payload struct {
+		Data []struct {
+			ID     string `json:"id"`
+			Active *bool  `json:"active"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil
+	}
+
+	var models []string
+	for _, it := range payload.Data {
+		if it.Active != nil && !*it.Active {
+			continue
+		}
+		if isGroqChatModel(it.ID) {
+			models = append(models, it.ID)
+		}
+	}
+	// Sort highest-capability chat models first
+	for i := 0; i < len(models); i++ {
+		best := i
+		for j := i + 1; j < len(models); j++ {
+			if rankGroqModel(models[j]) > rankGroqModel(models[best]) {
+				best = j
+			}
+		}
+		models[i], models[best] = models[best], models[i]
+	}
+
+	if len(models) > 0 {
+		groqModelsMu.Lock()
+		groqModelsCache = append([]string(nil), models...)
+		groqModelsFetched = time.Now()
+		groqModelsMu.Unlock()
+	}
+	return models
 }
 
 // TestGeminiConnection runs a real live JSON probe against the configured AI provider
@@ -262,7 +378,7 @@ func TestAIConnection(ctx context.Context, overrideProvider string, overrideKey 
 		cfg.Model = strings.TrimSpace(overrideModel)
 	}
 
-	_, epType, _, _ := detectProviderKind(cfg)
+	kind, epType, _, _ := detectProviderKind(cfg)
 
 	if cfg.GeminiAPIKey == "" {
 		return GeminiTestResult{
@@ -270,6 +386,11 @@ func TestAIConnection(ctx context.Context, overrideProvider string, overrideKey 
 			EndpointType: epType,
 			Error:        "No AI API key configured. Paste a Groq (gsk_...), OpenRouter (sk-or-...), or Google Gemini key.",
 		}
+	}
+
+	var liveModels []string
+	if kind == "groq" {
+		liveModels = fetchLiveGroqModels(ctx, cfg.GeminiAPIKey, true)
 	}
 
 	start := time.Now()
@@ -285,18 +406,20 @@ func TestAIConnection(ctx context.Context, overrideProvider string, overrideKey 
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
 		return GeminiTestResult{
-			Connected:    false,
-			ModelUsed:    cfg.Model,
-			EndpointType: epType,
-			LatencyMs:    latency,
-			Error:        err.Error(),
+			Connected:       false,
+			ModelUsed:       cfg.Model,
+			EndpointType:    epType,
+			LatencyMs:       latency,
+			AvailableModels: liveModels,
+			Error:           err.Error(),
 		}
 	}
 	return GeminiTestResult{
-		Connected:    true,
-		ModelUsed:    usedModel,
-		EndpointType: epType,
-		LatencyMs:    latency,
+		Connected:       true,
+		ModelUsed:       usedModel,
+		EndpointType:    epType,
+		LatencyMs:       latency,
+		AvailableModels: liveModels,
 	}
 }
 
@@ -357,27 +480,29 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 	}
 
 	var lastErr error
+	var triedErrs []string
 	for _, model := range modelsToTry {
-		reqObj := oaReq{
-			Model: model,
-			Messages: []oaMsg{
-				{Role: "system", Content: sysText},
-				{Role: "user", Content: userPrompt},
-			},
-			Temperature: temp,
-			MaxTokens:   maxTokens,
-		}
-		if kind == "groq" || kind == "openai" {
-			reqObj.ResponseFormat = &oaRespFmt{Type: "json_object"}
-		}
+		useJSONFormat := kind == "groq" || kind == "openai"
 
-		payloadBytes, err := json.Marshal(reqObj)
-		if err != nil {
-			return "", err
-		}
-
-		// Up to 2 automatic retries on 429 rate-limit bursts (Groq/OpenRouter free tiers)
+		// Up to 2 automatic retries on 429 rate-limit bursts or json_validate_failed
 		for attempt := 0; attempt < 3; attempt++ {
+			reqObj := oaReq{
+				Model: model,
+				Messages: []oaMsg{
+					{Role: "system", Content: sysText},
+					{Role: "user", Content: userPrompt},
+				},
+				Temperature: temp,
+				MaxTokens:   maxTokens,
+			}
+			if useJSONFormat {
+				reqObj.ResponseFormat = &oaRespFmt{Type: "json_object"}
+			}
+			payloadBytes, err := json.Marshal(reqObj)
+			if err != nil {
+				return "", err
+			}
+
 			client := &http.Client{Timeout: timeout}
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(payloadBytes))
 			if err != nil {
@@ -433,9 +558,16 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 				break
 			}
 			if parsed.Error != nil {
+				errMsgLow := strings.ToLower(parsed.Error.Message)
 				lastErr = fmt.Errorf("%s api error (%d): %s", strings.ToLower(label), resp.StatusCode, parsed.Error.Message)
-				if resp.StatusCode == 404 || (resp.StatusCode == 400 && strings.Contains(strings.ToLower(parsed.Error.Message), "model")) {
-					break // try next fallback model
+				if resp.StatusCode == 400 && useJSONFormat && (strings.Contains(errMsgLow, "json") || strings.Contains(errMsgLow, "response_format")) {
+					// Some open-weight models reject strict response_format; retry cleanly relying on prompt JSON + cleanAIJSONResponse
+					useJSONFormat = false
+					continue
+				}
+				if resp.StatusCode == 404 || (resp.StatusCode == 400 && strings.Contains(errMsgLow, "model")) {
+					triedErrs = append(triedErrs, fmt.Sprintf("%s: %s", model, parsed.Error.Message))
+					break // try next live model
 				}
 				if resp.StatusCode == 401 || resp.StatusCode == 403 {
 					return "", lastErr
@@ -463,6 +595,9 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 		}
 	}
 
+	if len(triedErrs) > 0 && lastErr != nil {
+		return "", fmt.Errorf("%s (tried: %s)", lastErr.Error(), strings.Join(triedErrs, " | "))
+	}
 	return "", lastErr
 }
 
@@ -476,18 +611,30 @@ func callGeminiWithConfig(ctx context.Context, cfg AIConfig, systemPrompt string
 	if isModelCompatibleWithProvider(kind, cfg.Model) {
 		modelsToTry = append(modelsToTry, strings.TrimSpace(cfg.Model))
 	}
-	for _, dm := range defaultModels {
-		dup := false
-		for _, existing := range modelsToTry {
-			if existing == dm {
-				dup = true
-				break
+	appendUnique := func(list []string) {
+		for _, m := range list {
+			dup := false
+			for _, existing := range modelsToTry {
+				if existing == m {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				modelsToTry = append(modelsToTry, m)
 			}
 		}
-		if !dup {
-			modelsToTry = append(modelsToTry, dm)
+	}
+	if kind == "groq" {
+		if live := fetchLiveGroqModels(ctx, cfg.GeminiAPIKey, false); len(live) > 0 {
+			// Cap to top 5 ranked live chat models from the user's actual Groq account
+			if len(live) > 5 {
+				live = live[:5]
+			}
+			appendUnique(live)
 		}
 	}
+	appendUnique(defaultModels)
 
 	if kind == "groq" || kind == "openrouter" || kind == "openai" {
 		return callOpenAICompatibleJSON(ctx, cfg, kind, label, baseURL, modelsToTry, systemPrompt, userPrompt, dst, opts)
