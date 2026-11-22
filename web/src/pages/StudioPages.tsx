@@ -832,7 +832,7 @@ export const ProductionStudioPage: React.FC = () => {
                             : 'bg-amber-500/10 text-amber-500 border-amber-500/25'
                         }`}
                       >
-                        {proj.competitiveBrief.usedGemini ? 'Gemini AI Strategy' : 'Data-Driven Strategy'}
+                        {proj.competitiveBrief.usedGemini ? 'Live AI Strategy' : 'Legacy Cached Strategy'}
                       </span>
                     </>
                   )}
@@ -1009,11 +1009,11 @@ export const ProductionStudioPage: React.FC = () => {
                 <div className="flex flex-wrap items-center gap-2 mt-2.5">
                   {scr.generationMeta?.usedGemini ? (
                     <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-500 border border-emerald-500/30 text-[10px] font-extrabold">
-                      ✓ Written by Live Gemini AI ({scr.generationMeta.model || 'gemini-2.5-flash'})
+                      ✓ Written by Live AI ({scr.generationMeta.model || scr.generationMeta.engine || 'Active Model'})
                     </span>
                   ) : (
                     <span className="px-2.5 py-0.5 rounded-full bg-rose-500/10 text-rose-500 border border-rose-500/30 text-[10px] font-extrabold">
-                      ⚠ Local Fallback Engine (Not AI-Written)
+                      ⚠ Legacy Script (Re-run with Live AI)
                     </span>
                   )}
                   {scr.generationMeta?.openingArchetype && (

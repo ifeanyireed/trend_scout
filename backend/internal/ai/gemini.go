@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,20 +24,45 @@ type AIConfig struct {
 	YouTubeAPIKey string `json:"youtubeApiKey"`
 }
 
-// GetAIConfig resolves Gemini & YouTube keys from user_settings (PostgreSQL) or environment variables (.env).
+// GetAIConfig resolves AI provider, model, API key & YouTube key from user_settings (PostgreSQL) or environment variables (.env).
+// Supports Groq (gsk_...), OpenRouter (sk-or-...), OpenAI (sk-...), Google AI Studio (AIza...), and Vertex AI Express (AQ...).
 func GetAIConfig(ctx context.Context) AIConfig {
-	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("GEMINI_API"))
-	}
-
-	model := strings.TrimSpace(os.Getenv("GEMINI_MODEL"))
-	if model == "" {
-		model = "gemini-2.5-flash"
+	provider := strings.TrimSpace(os.Getenv("AI_PROVIDER"))
+	apiKey := strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
+	model := strings.TrimSpace(os.Getenv("AI_MODEL"))
+	if apiKey != "" {
+		if provider == "" {
+			provider = "Groq"
+		}
+		if model == "" {
+			model = "llama-3.3-70b-versatile"
+		}
+	} else if orKey := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")); orKey != "" {
+		apiKey = orKey
+		if provider == "" {
+			provider = "OpenRouter"
+		}
+		if model == "" {
+			model = "meta-llama/llama-3.3-70b-instruct:free"
+		}
+	} else {
+		apiKey = strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(os.Getenv("GEMINI_API"))
+		}
+		if provider == "" {
+			provider = "Google Gemini"
+		}
+		if model == "" {
+			model = strings.TrimSpace(os.Getenv("GEMINI_MODEL"))
+		}
+		if model == "" {
+			model = "gemini-2.5-flash"
+		}
 	}
 
 	cfg := AIConfig{
-		Provider:      "Google Gemini",
+		Provider:      provider,
 		Model:         model,
 		GeminiAPIKey:  apiKey,
 		YouTubeAPIKey: strings.TrimSpace(os.Getenv("YOUTUBE_API_KEY")),
@@ -46,7 +73,13 @@ func GetAIConfig(ctx context.Context) AIConfig {
 		if err := db.DB.QueryRowContext(ctx, `SELECT ai_prefs_json FROM user_settings LIMIT 1`).Scan(&aiJSON); err == nil && aiJSON != "" {
 			var m map[string]any
 			if json.Unmarshal([]byte(aiJSON), &m) == nil {
+				if v, ok := m["provider"].(string); ok && strings.TrimSpace(v) != "" {
+					cfg.Provider = strings.TrimSpace(v)
+				}
 				if v, ok := m["geminiApiKey"].(string); ok && strings.TrimSpace(v) != "" {
+					cfg.GeminiAPIKey = strings.TrimSpace(v)
+				}
+				if v, ok := m["groqApiKey"].(string); ok && strings.TrimSpace(v) != "" && cfg.GeminiAPIKey == "" {
 					cfg.GeminiAPIKey = strings.TrimSpace(v)
 				}
 				if v, ok := m["youtubeApiKey"].(string); ok && strings.TrimSpace(v) != "" {
@@ -54,7 +87,7 @@ func GetAIConfig(ctx context.Context) AIConfig {
 				}
 				if v, ok := m["model"].(string); ok && strings.TrimSpace(v) != "" {
 					modelVal := strings.TrimSpace(v)
-					if strings.HasPrefix(modelVal, "gemini-") && !strings.Contains(modelVal, "/") {
+					if !strings.Contains(modelVal, " ") {
 						cfg.Model = modelVal
 					}
 				}
@@ -62,6 +95,92 @@ func GetAIConfig(ctx context.Context) AIConfig {
 		}
 	}
 	return cfg
+}
+
+func detectProviderKind(cfg AIConfig) (kind string, label string, baseURL string, defaultModels []string) {
+	key := strings.TrimSpace(cfg.GeminiAPIKey)
+	provLow := strings.ToLower(strings.TrimSpace(cfg.Provider))
+
+	switch {
+	case strings.HasPrefix(key, "gsk_") || strings.Contains(provLow, "groq"):
+		return "groq", "Groq", "https://api.groq.com/openai/v1/chat/completions", []string{
+			"llama-3.3-70b-versatile",
+			"meta-llama/llama-4-scout-17b-16e-instruct",
+			"llama-3.1-8b-instant",
+		}
+	case strings.HasPrefix(key, "sk-or-") || strings.Contains(provLow, "openrouter"):
+		return "openrouter", "OpenRouter", "https://openrouter.ai/api/v1/chat/completions", []string{
+			"meta-llama/llama-3.3-70b-instruct:free",
+			"google/gemma-3-27b-it:free",
+		}
+	case strings.HasPrefix(key, "AQ."):
+		return "vertex", "Vertex AI Express", "", []string{
+			"gemini-2.5-flash",
+			"gemini-2.0-flash",
+		}
+	case strings.HasPrefix(key, "AIza") || strings.HasPrefix(key, "ya29."):
+		return "gemini", "Google AI Studio", "", []string{
+			"gemini-2.5-flash",
+			"gemini-2.0-flash",
+		}
+	case strings.HasPrefix(key, "sk-") || strings.Contains(provLow, "openai"):
+		return "openai", "OpenAI", "https://api.openai.com/v1/chat/completions", []string{
+			"gpt-4o-mini",
+			"gpt-4o",
+		}
+	default:
+		return "gemini", "Google AI Studio", "", []string{
+			"gemini-2.5-flash",
+			"gemini-2.0-flash",
+		}
+	}
+}
+
+func isModelCompatibleWithProvider(kind, model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" || strings.Contains(m, " ") {
+		return false
+	}
+	switch kind {
+	case "groq":
+		return !strings.HasPrefix(m, "gemini-") && !strings.HasPrefix(m, "gpt-") && !strings.HasSuffix(m, ":free")
+	case "openrouter":
+		return strings.Contains(m, "/")
+	case "openai":
+		return strings.HasPrefix(m, "gpt-") || strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4")
+	default:
+		return strings.HasPrefix(m, "gemini-") && !strings.Contains(m, "/")
+	}
+}
+
+var thinkBlockRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
+
+func cleanAIJSONResponse(raw string) string {
+	text := strings.TrimSpace(raw)
+	text = thinkBlockRe.ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+	text = strings.TrimPrefix(text, "```json")
+	text = strings.TrimPrefix(text, "```JSON")
+	text = strings.TrimPrefix(text, "```")
+	text = strings.TrimSuffix(text, "```")
+	text = strings.TrimSpace(text)
+	// Extract outermost JSON object if wrapped in stray prose
+	if !strings.HasPrefix(text, "{") {
+		if idx := strings.Index(text, "{"); idx >= 0 {
+			text = text[idx:]
+		}
+	}
+	if !strings.HasSuffix(text, "}") {
+		if idx := strings.LastIndex(text, "}"); idx >= 0 {
+			text = text[:idx+1]
+		}
+	}
+	return strings.TrimSpace(text)
+}
+
+func ActiveProviderLabel(ctx context.Context) string {
+	_, label, _, _ := detectProviderKind(GetAIConfig(ctx))
+	return label
 }
 
 func HasGeminiKey(ctx context.Context) bool {
@@ -125,10 +244,17 @@ type GeminiTestResult struct {
 	Error        string `json:"error,omitempty"`
 }
 
-// TestGeminiConnection runs a real live JSON probe against Google AI Studio or Vertex AI Express
-// so producers can immediately verify their Gemini key and model are working.
+// TestGeminiConnection runs a real live JSON probe against the configured AI provider
+// (Groq, OpenRouter, OpenAI, Google AI Studio, or Vertex AI Express) so producers can immediately verify live AI.
 func TestGeminiConnection(ctx context.Context, overrideKey string, overrideModel string) GeminiTestResult {
+	return TestAIConnection(ctx, "", overrideKey, overrideModel)
+}
+
+func TestAIConnection(ctx context.Context, overrideProvider string, overrideKey string, overrideModel string) GeminiTestResult {
 	cfg := GetAIConfig(ctx)
+	if strings.TrimSpace(overrideProvider) != "" {
+		cfg.Provider = strings.TrimSpace(overrideProvider)
+	}
 	if strings.TrimSpace(overrideKey) != "" {
 		cfg.GeminiAPIKey = strings.TrimSpace(overrideKey)
 	}
@@ -136,18 +262,13 @@ func TestGeminiConnection(ctx context.Context, overrideKey string, overrideModel
 		cfg.Model = strings.TrimSpace(overrideModel)
 	}
 
-	epType := "Google AI Studio"
-	if strings.HasPrefix(cfg.GeminiAPIKey, "AQ.") {
-		epType = "Vertex AI Express"
-	} else if strings.HasPrefix(cfg.GeminiAPIKey, "ya29.") {
-		epType = "Google OAuth2"
-	}
+	_, epType, _, _ := detectProviderKind(cfg)
 
 	if cfg.GeminiAPIKey == "" {
 		return GeminiTestResult{
 			Connected:    false,
 			EndpointType: epType,
-			Error:        "No Gemini API key configured. Paste a Google AI Studio (AIza...) key or an enabled Vertex AI Express (AQ...) key.",
+			Error:        "No AI API key configured. Paste a Groq (gsk_...), OpenRouter (sk-or-...), or Google Gemini key.",
 		}
 	}
 
@@ -156,10 +277,10 @@ func TestGeminiConnection(ctx context.Context, overrideKey string, overrideModel
 		Status string `json:"status"`
 	}
 	usedModel, err := callGeminiWithConfig(ctx, cfg,
-		`Return strictly valid JSON: {"status":"ok"}`,
-		`Respond with {"status":"ok"}`,
+		`You are a connection health probe. Return strictly valid JSON: {"status":"ok"}`,
+		`Respond with JSON: {"status":"ok"}`,
 		&probe,
-		GeminiCallOptions{Temperature: 0.1, MaxOutputTokens: 32, Timeout: 12 * time.Second},
+		GeminiCallOptions{Temperature: 0.1, MaxOutputTokens: 64, Timeout: 14 * time.Second},
 	)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
@@ -179,16 +300,197 @@ func TestGeminiConnection(ctx context.Context, overrideKey string, overrideModel
 	}
 }
 
-// CallGeminiJSONWithOptions invokes Gemini with configurable timeout, temperature, and output token ceiling.
+// CallGeminiJSONWithOptions invokes the active AI provider (Groq, OpenRouter, OpenAI, or Gemini) with JSON mode.
 func CallGeminiJSONWithOptions(ctx context.Context, systemPrompt string, userPrompt string, dst any, opts GeminiCallOptions) error {
 	cfg := GetAIConfig(ctx)
 	_, err := callGeminiWithConfig(ctx, cfg, systemPrompt, userPrompt, dst, opts)
 	return err
 }
 
+func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, label string, baseURL string, modelsToTry []string, systemPrompt string, userPrompt string, dst any, opts GeminiCallOptions) (string, error) {
+	temp := opts.Temperature
+	if temp <= 0 {
+		temp = 0.25
+	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	maxTokens := opts.MaxOutputTokens
+	if maxTokens <= 0 {
+		maxTokens = 2048
+	}
+	if kind == "groq" && maxTokens > 8000 {
+		maxTokens = 8000
+	}
+
+	sysText := systemPrompt
+	if !strings.Contains(strings.ToLower(sysText), "json") {
+		sysText += "\nReturn strictly valid JSON only."
+	}
+
+	type oaMsg struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	type oaRespFmt struct {
+		Type string `json:"type"`
+	}
+	type oaReq struct {
+		Model          string     `json:"model"`
+		Messages       []oaMsg    `json:"messages"`
+		Temperature    float64    `json:"temperature,omitempty"`
+		MaxTokens      int        `json:"max_tokens,omitempty"`
+		ResponseFormat *oaRespFmt `json:"response_format,omitempty"`
+	}
+	type oaResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    any    `json:"code"`
+		} `json:"error,omitempty"`
+	}
+
+	var lastErr error
+	for _, model := range modelsToTry {
+		reqObj := oaReq{
+			Model: model,
+			Messages: []oaMsg{
+				{Role: "system", Content: sysText},
+				{Role: "user", Content: userPrompt},
+			},
+			Temperature: temp,
+			MaxTokens:   maxTokens,
+		}
+		if kind == "groq" || kind == "openai" {
+			reqObj.ResponseFormat = &oaRespFmt{Type: "json_object"}
+		}
+
+		payloadBytes, err := json.Marshal(reqObj)
+		if err != nil {
+			return "", err
+		}
+
+		// Up to 2 automatic retries on 429 rate-limit bursts (Groq/OpenRouter free tiers)
+		for attempt := 0; attempt < 3; attempt++ {
+			client := &http.Client{Timeout: timeout}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(payloadBytes))
+			if err != nil {
+				return "", err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+cfg.GeminiAPIKey)
+			if kind == "openrouter" {
+				req.Header.Set("HTTP-Referer", "https://trendscout-iota.vercel.app")
+				req.Header.Set("X-Title", "TrendScout Studio")
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				lastErr = fmt.Errorf("%s request failed: %w", label, err)
+				break
+			}
+			rawResp, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				lastErr = fmt.Errorf("%s read failed: %w", label, err)
+				break
+			}
+
+			if resp.StatusCode == 429 {
+				waitSec := 3 * (attempt + 1)
+				if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
+					if parsedSec, errP := strconv.Atoi(ra); errP == nil && parsedSec > 0 && parsedSec <= 10 {
+						waitSec = parsedSec
+					}
+				}
+				var er oaResp
+				_ = json.Unmarshal(rawResp, &er)
+				msg := "rate limit exceeded"
+				if er.Error != nil && er.Error.Message != "" {
+					msg = er.Error.Message
+				}
+				lastErr = fmt.Errorf("%s api error (429): %s", strings.ToLower(label), msg)
+				if attempt < 2 {
+					select {
+					case <-ctx.Done():
+						return "", lastErr
+					case <-time.After(time.Duration(waitSec) * time.Second):
+						continue
+					}
+				}
+				break // try next model bucket if available
+			}
+
+			var parsed oaResp
+			if err := json.Unmarshal(rawResp, &parsed); err != nil {
+				lastErr = fmt.Errorf("decode %s response (%d): %w", label, resp.StatusCode, err)
+				break
+			}
+			if parsed.Error != nil {
+				lastErr = fmt.Errorf("%s api error (%d): %s", strings.ToLower(label), resp.StatusCode, parsed.Error.Message)
+				if resp.StatusCode == 404 || (resp.StatusCode == 400 && strings.Contains(strings.ToLower(parsed.Error.Message), "model")) {
+					break // try next fallback model
+				}
+				if resp.StatusCode == 401 || resp.StatusCode == 403 {
+					return "", lastErr
+				}
+				break
+			}
+			if resp.StatusCode >= 400 {
+				lastErr = fmt.Errorf("%s api error (%d): %s", strings.ToLower(label), resp.StatusCode, strings.TrimSpace(string(rawResp)))
+				if resp.StatusCode == 401 || resp.StatusCode == 403 {
+					return "", lastErr
+				}
+				break
+			}
+			if len(parsed.Choices) == 0 || strings.TrimSpace(parsed.Choices[0].Message.Content) == "" {
+				lastErr = fmt.Errorf("%s returned empty response", label)
+				break
+			}
+
+			cleaned := cleanAIJSONResponse(parsed.Choices[0].Message.Content)
+			if err := json.Unmarshal([]byte(cleaned), dst); err != nil {
+				lastErr = fmt.Errorf("unmarshal %s json: %w", label, err)
+				break
+			}
+			return model, nil
+		}
+	}
+
+	return "", lastErr
+}
+
 func callGeminiWithConfig(ctx context.Context, cfg AIConfig, systemPrompt string, userPrompt string, dst any, opts GeminiCallOptions) (string, error) {
 	if cfg.GeminiAPIKey == "" {
-		return "", fmt.Errorf("GEMINI_API_KEY not configured")
+		return "", fmt.Errorf("AI API key not configured")
+	}
+
+	kind, label, baseURL, defaultModels := detectProviderKind(cfg)
+	var modelsToTry []string
+	if isModelCompatibleWithProvider(kind, cfg.Model) {
+		modelsToTry = append(modelsToTry, strings.TrimSpace(cfg.Model))
+	}
+	for _, dm := range defaultModels {
+		dup := false
+		for _, existing := range modelsToTry {
+			if existing == dm {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			modelsToTry = append(modelsToTry, dm)
+		}
+	}
+
+	if kind == "groq" || kind == "openrouter" || kind == "openai" {
+		return callOpenAICompatibleJSON(ctx, cfg, kind, label, baseURL, modelsToTry, systemPrompt, userPrompt, dst, opts)
 	}
 
 	temp := opts.Temperature
@@ -200,15 +502,7 @@ func callGeminiWithConfig(ctx context.Context, cfg AIConfig, systemPrompt string
 		timeout = 15 * time.Second
 	}
 
-	modelsToTry := []string{cfg.Model}
-	if cfg.Model != "gemini-2.5-flash" {
-		modelsToTry = append(modelsToTry, "gemini-2.5-flash")
-	}
-	if cfg.Model != "gemini-2.0-flash" {
-		modelsToTry = append(modelsToTry, "gemini-2.0-flash")
-	}
-
-	isVertexExpressKey := strings.HasPrefix(cfg.GeminiAPIKey, "AQ.")
+	isVertexExpressKey := kind == "vertex"
 	isOAuthToken := strings.HasPrefix(cfg.GeminiAPIKey, "ya29.")
 
 	var lastErr error
@@ -277,7 +571,6 @@ func callGeminiWithConfig(ctx context.Context, cfg AIConfig, systemPrompt string
 		}
 		if gResp.Error != nil {
 			lastErr = fmt.Errorf("gemini api error (%d): %s", gResp.Error.Code, gResp.Error.Message)
-			// Retry fallback model if requested model name does not exist (404/400)
 			if gResp.Error.Code == 404 || (gResp.Error.Code == 400 && strings.Contains(strings.ToLower(gResp.Error.Message), "model")) {
 				continue
 			}
@@ -288,12 +581,7 @@ func callGeminiWithConfig(ctx context.Context, cfg AIConfig, systemPrompt string
 			continue
 		}
 
-		text := strings.TrimSpace(gResp.Candidates[0].Content.Parts[0].Text)
-		text = strings.TrimPrefix(text, "```json")
-		text = strings.TrimPrefix(text, "```")
-		text = strings.TrimSuffix(text, "```")
-		text = strings.TrimSpace(text)
-
+		text := cleanAIJSONResponse(gResp.Candidates[0].Content.Parts[0].Text)
 		if err := json.Unmarshal([]byte(text), dst); err != nil {
 			lastErr = fmt.Errorf("unmarshal gemini json: %w", err)
 			continue
@@ -759,7 +1047,21 @@ Return strictly valid JSON matching:
 	chaptersOut := make([]DocumentaryChapterAI, len(outline.Chapters))
 	chapterErrs := make([]error, len(outline.Chapters))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4)
+	// Bound concurrency for Groq/OpenRouter free-tier TPM limits while keeping full 7-chapter generation fast
+	maxConc := 4
+	kind, _, _, _ := detectProviderKind(cfg)
+	if kind == "groq" || kind == "openrouter" {
+		maxConc = 2
+	}
+	sem := make(chan struct{}, maxConc)
+	bioForChapter := biography
+	if len(bioForChapter) > 2800 {
+		bioForChapter = bioForChapter[:2800]
+	}
+	claimsForChapter := claimsText
+	if len(claimsForChapter) > 2200 {
+		claimsForChapter = claimsForChapter[:2200]
+	}
 
 	chapterSys := `You are the Lead Investigative Documentary Screenwriter & Visual Pacing Editor.
 You write realigned shot-by-shot documentary scripts where EVERY visual cut is STRICTLY <= 7 seconds (4 to 7 seconds per shot) so the viewer sees a fresh, purposeful image at least every 7 seconds of speech or silence.
@@ -848,7 +1150,7 @@ Return strictly valid JSON matching:
 				chPlan.ChapterNumber, chPlan.Title, formatClockMMSS(chPlan.StartSeconds), formatClockMMSS(chPlan.EndSeconds), chDur,
 				targetShots, targetShots+4,
 				chPlan.NarrativeArc, chPlan.SpatialMotif, chPlan.StrategyExecution, string(factsJSON), competitiveBriefText,
-				biography, claimsText,
+				bioForChapter, claimsForChapter,
 				chPlan.ChapterNumber, chPlan.Title, chPlan.StartSeconds, chPlan.EndSeconds)
 
 			var built DocumentaryChapterAI

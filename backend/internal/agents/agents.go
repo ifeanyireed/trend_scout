@@ -1353,9 +1353,10 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 		return "", fmt.Errorf("Gemini AI documentary script generation failed: %s", sanitizeAIErrorForUI(errAI))
 	}
 
+	providerLabel := ai.ActiveProviderLabel(ctx)
 	genMeta := ScriptGenerationMeta{
 		UsedGemini:       true,
-		Engine:           "Gemini Live AI (2-Stage Underdog Engine)",
+		Engine:           fmt.Sprintf("%s Live AI (2-Stage Underdog Engine)", providerLabel),
 		Model:            aiDoc.ModelUsed,
 		OpeningArchetype: strings.TrimSpace(aiDoc.OpeningArchetype),
 		UnderdogAngle:    strings.TrimSpace(aiDoc.UnderdogAngle),
@@ -1471,9 +1472,9 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 		WHERE id = $1
 	`, projectID, targetDurationMinutes)
 
-	engineTag := "Gemini 2-Stage Underdog Engine"
+	engineTag := fmt.Sprintf("%s 2-Stage Underdog Engine", providerLabel)
 	if genMeta.Model != "" {
-		engineTag = fmt.Sprintf("Gemini %s Underdog Engine", genMeta.Model)
+		engineTag = fmt.Sprintf("%s (%s) Underdog Engine", providerLabel, genMeta.Model)
 	}
 	detectedLabel := domain.Label
 	if len(sections) > 0 && sections[0].DomainField != "" {

@@ -1288,11 +1288,12 @@ func RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		var req struct {
+			Provider     string `json:"provider"`
 			GeminiAPIKey string `json:"geminiApiKey"`
 			Model        string `json:"model"`
 		}
 		_ = readJSON(r, &req)
-		res := ai.TestGeminiConnection(r.Context(), req.GeminiAPIKey, req.Model)
+		res := ai.TestAIConnection(r.Context(), req.Provider, req.GeminiAPIKey, req.Model)
 		writeJSON(w, 200, res)
 	}))
 

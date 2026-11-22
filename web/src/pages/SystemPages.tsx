@@ -186,8 +186,9 @@ export const SettingsPage: React.FC = () => {
       const res = await apiFetch('/api/settings/test-ai', {
         method: 'POST',
         body: JSON.stringify({
+          provider: settings.ai?.provider || 'Groq',
           geminiApiKey: settings.ai?.geminiApiKey || '',
-          model: settings.ai?.model || 'gemini-2.5-flash',
+          model: settings.ai?.model || 'llama-3.3-70b-versatile',
         }),
       });
       setAiTestResult(res);
@@ -197,6 +198,47 @@ export const SettingsPage: React.FC = () => {
       setTestingAI(false);
     }
   };
+
+  const handleApiKeyChange = (val: string) => {
+    const trimmed = val.trim();
+    updateField('ai', 'geminiApiKey', val);
+    if (trimmed.startsWith('gsk_')) {
+      updateField('ai', 'provider', 'Groq');
+      updateField('ai', 'model', 'llama-3.3-70b-versatile');
+    } else if (trimmed.startsWith('sk-or-')) {
+      updateField('ai', 'provider', 'OpenRouter');
+      updateField('ai', 'model', 'meta-llama/llama-3.3-70b-instruct:free');
+    } else if (trimmed.startsWith('AIza') || trimmed.startsWith('AQ.')) {
+      updateField('ai', 'provider', 'Google Gemini');
+      updateField('ai', 'model', 'gemini-2.5-flash');
+    } else if (trimmed.startsWith('sk-')) {
+      updateField('ai', 'provider', 'OpenAI');
+      updateField('ai', 'model', 'gpt-4o-mini');
+    }
+  };
+
+  const activeProvider = settings.ai?.provider || 'Groq';
+  const modelOptions: Record<string, { value: string; label: string }[]> = {
+    Groq: [
+      { value: 'llama-3.3-70b-versatile', label: 'llama-3.3-70b-versatile (Recommended Free Tier)' },
+      { value: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'llama-4-scout-17b-16e-instruct (Fast / High TPM)' },
+      { value: 'llama-3.1-8b-instant', label: 'llama-3.1-8b-instant (Ultra Fast)' },
+    ],
+    OpenRouter: [
+      { value: 'meta-llama/llama-3.3-70b-instruct:free', label: 'llama-3.3-70b-instruct:free' },
+      { value: 'google/gemma-3-27b-it:free', label: 'gemma-3-27b-it:free' },
+    ],
+    'Google Gemini': [
+      { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash (Recommended)' },
+      { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro (Deepest Reasoning)' },
+      { value: 'gemini-2.0-flash', label: 'gemini-2.0-flash' },
+    ],
+    OpenAI: [
+      { value: 'gpt-4o-mini', label: 'gpt-4o-mini (Fast & Low Cost)' },
+      { value: 'gpt-4o', label: 'gpt-4o (Flagship)' },
+    ],
+  };
+  const currentModels = modelOptions[activeProvider] || modelOptions.Groq;
 
   return (
     <div className="space-y-6">
@@ -298,7 +340,7 @@ export const SettingsPage: React.FC = () => {
               className="px-3.5 py-1.5 rounded-full border border-nexa-brand/40 bg-nexa-brand/10 hover:bg-nexa-brand/20 text-nexa-brand text-[11px] font-extrabold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               {testingAI ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
-              {testingAI ? 'Testing Gemini...' : 'Test Gemini Connection'}
+              {testingAI ? 'Testing AI...' : 'Test AI Connection'}
             </button>
           </div>
 
@@ -322,13 +364,13 @@ export const SettingsPage: React.FC = () => {
                       Connected Live: {aiTestResult.modelUsed} via {aiTestResult.endpointType} ({aiTestResult.latencyMs}ms)
                     </div>
                     <div className="text-[11px] opacity-90">
-                      Real Gemini AI is active for Stage 0 Competitor Study, Underdog Scriptwriting, and SEO Packaging.
+                      Real Live AI is active for Discovery, Stage 0 Competitor Study, Underdog Scriptwriting, and SEO Packaging.
                     </div>
                   </>
                 ) : (
                   <>
                     <div className="font-extrabold">
-                      Gemini Connection Failed ({aiTestResult.endpointType || 'API Error'})
+                      AI Connection Failed ({aiTestResult.endpointType || 'API Error'})
                     </div>
                     <div className="text-[11px] break-words">{aiTestResult.error}</div>
                   </>
@@ -339,14 +381,35 @@ export const SettingsPage: React.FC = () => {
 
           <div>
             <label className="block text-xs font-bold text-nexa-text-secondary mb-1">
-              Gemini API Key (Google AI Studio <code className="text-[11px]">AIza...</code> or Enabled Vertex Express <code className="text-[11px]">AQ...</code>)
+              AI Provider
+            </label>
+            <select
+              value={activeProvider}
+              onChange={(e) => {
+                const prov = e.target.value;
+                updateField('ai', 'provider', prov);
+                const opts = modelOptions[prov] || modelOptions.Groq;
+                updateField('ai', 'model', opts[0].value);
+              }}
+              className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary"
+            >
+              <option value="Groq">Groq (Free Tier — No Billing Required)</option>
+              <option value="OpenRouter">OpenRouter (Free Models — No Billing)</option>
+              <option value="Google Gemini">Google Gemini (AI Studio / Vertex AI)</option>
+              <option value="OpenAI">OpenAI (GPT-4o)</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-nexa-text-secondary mb-1">
+              AI API Key (<code className="text-[11px]">gsk_...</code> Groq, <code className="text-[11px]">sk-or-...</code> OpenRouter, <code className="text-[11px]">AIza...</code> Gemini, or <code className="text-[11px]">sk-...</code> OpenAI)
             </label>
             <div className="relative">
               <input
                 type={showGeminiKey ? 'text' : 'password'}
                 value={settings.ai?.geminiApiKey ?? ''}
-                onChange={(e) => updateField('ai', 'geminiApiKey', e.target.value)}
-                placeholder="Paste AIza... (Google AI Studio) or AQ... (Vertex AI Express)"
+                onChange={(e) => handleApiKeyChange(e.target.value)}
+                placeholder="Paste gsk_... (Groq), sk-or-... (OpenRouter), or AIza... (Gemini)"
                 className="w-full px-3.5 py-2.5 pr-10 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary font-mono"
               />
               <button
@@ -363,16 +426,18 @@ export const SettingsPage: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-nexa-text-secondary mb-1">
-                Gemini Model
+                AI Model
               </label>
               <select
-                value={settings.ai?.model ?? 'gemini-2.5-flash'}
+                value={currentModels.some((m) => m.value === settings.ai?.model) ? settings.ai?.model : currentModels[0].value}
                 onChange={(e) => updateField('ai', 'model', e.target.value)}
                 className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary"
               >
-                <option value="gemini-2.5-flash">gemini-2.5-flash (Recommended)</option>
-                <option value="gemini-2.5-pro">gemini-2.5-pro (Deepest Reasoning)</option>
-                <option value="gemini-2.0-flash">gemini-2.0-flash (Fast Legacy)</option>
+                {currentModels.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -414,7 +479,7 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           <div className="p-3 rounded-2xl bg-nexa-brand/5 border border-nexa-brand/20 text-xs text-nexa-text-secondary">
-            <strong className="text-nexa-brand">Live Gemini AI Required (Zero Fallbacks):</strong> All discovery synthesis, Stage 0 competitor analysis, documentary scriptwriting, and SEO packaging require a working Gemini API key and return an explicit error if AI fails. Click <strong>Test Gemini Connection</strong> above to verify your key.
+            <strong className="text-nexa-brand">Live AI Required (Zero Fallbacks):</strong> All discovery synthesis, Stage 0 competitor analysis, documentary scriptwriting, and SEO packaging require a working AI key (Groq, OpenRouter, Gemini, or OpenAI) and return an explicit error if AI fails. Click <strong>Test AI Connection</strong> above to verify your key.
           </div>
 
           <div>

@@ -78,12 +78,12 @@ func sanitizeAIErrorForUI(err error) string {
 	switch {
 	case strings.Contains(low, "aiplatform.googleapis.com") && strings.Contains(low, "disabled"):
 		return "Vertex AI API (aiplatform.googleapis.com) is disabled for your AQ.* key — enable Vertex AI API in Google Cloud Console or switch Settings to a Google AI Studio (AIza...) key."
-	case strings.Contains(low, "api_key_service_blocked") || strings.Contains(low, "401"):
-		return "Gemini API key was rejected (401 Unauthorized) — open Settings and configure a valid Google AI Studio (AIza...) key or enabled Vertex AI Express key."
-	case strings.Contains(low, "429") || strings.Contains(low, "quota") || strings.Contains(low, "resource_exhausted"):
-		return "Gemini API quota exceeded (429) — wait briefly or upgrade your Gemini API quota."
+	case strings.Contains(low, "api_key_service_blocked") || strings.Contains(low, "401") || strings.Contains(low, "invalid api key"):
+		return "AI API key was rejected (401 Unauthorized) — open Settings and configure a valid Groq (gsk_...), OpenRouter (sk-or-...), or Gemini key."
+	case strings.Contains(low, "429") || strings.Contains(low, "quota") || strings.Contains(low, "resource_exhausted") || strings.Contains(low, "rate limit"):
+		return "AI rate limit exceeded (429) — wait a few seconds and retry."
 	case strings.Contains(low, "not configured") || strings.Contains(low, "not set"):
-		return "No Gemini API key configured — open Settings and add a valid Gemini API key."
+		return "No AI API key configured — open Settings and add a Groq (gsk_...), OpenRouter (sk-or-...), or Gemini API key."
 	default:
 		if len(msg) > 220 {
 			msg = msg[:217] + "..."
