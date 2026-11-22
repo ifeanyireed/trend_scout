@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
-  Archive, ArchiveRestore, ArrowRight, Bookmark, Compass, Copy, Eye, EyeOff, Film, Flame, Hash, Lock,
-  RefreshCw, Save, Search, ShieldCheck, Sparkles, Tag, Trophy, TrendingUp, Activity, Bell, CheckCircle2, AlertCircle, Clock
+  Archive, ArchiveRestore, ArrowRight, Bookmark, Compass, Copy, ExternalLink, Eye, EyeOff, Film, Flame, Hash, Lock,
+  MessageSquare, PlayCircle, RefreshCw, Save, Search, ShieldCheck, Sparkles, Tag, ThumbsUp, Trophy, TrendingUp, Activity, Bell, CheckCircle2, AlertCircle, Clock, Users
 } from 'lucide-react';
 import { apiFetch, hasActiveSession, setAuthSession } from '../api/client';
 import { PaginationController } from '../components/PaginationController';
@@ -811,6 +811,7 @@ export const OpportunityDetailPage: React.FC = () => {
   const [detail, setDetail] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [seoBusy, setSeoBusy] = useState(false);
+  const [ytBusy, setYtBusy] = useState(false);
   const [reprocessing, setReprocessing] = useState(false);
   const [copiedKey, setCopiedKey] = useState('');
   const [videoDescription, setVideoDescription] = useState('');
@@ -929,6 +930,50 @@ export const OpportunityDetailPage: React.FC = () => {
     }
   };
 
+  const handleRefreshYouTubeIntel = async () => {
+    setYtBusy(true);
+    try {
+      const updated = await apiFetch(`/api/discoveries/${detail.id}/youtube/refresh`, {
+        method: 'POST',
+        body: '{}',
+      });
+      if (updated && updated.id) {
+        setDetail(updated);
+        syncSeoState(updated);
+      } else {
+        load();
+      }
+    } finally {
+      setYtBusy(false);
+    }
+  };
+
+  const formatVideoDuration = (sec: number) => {
+    if (!sec || sec <= 0) return '—';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  };
+
+  const ytIntel = detail.youtubeIntelligence || {
+    videoCount: 0,
+    totalViews: 0,
+    totalLikes: 0,
+    totalComments: 0,
+    peakViewsPerHour: detail.viewsPerHour || 0,
+    peakViewsPerDay: (detail.viewsPerHour || 0) * 24,
+    topOutlierMultiplier: detail.channelRelativePerf || 1,
+    avgEngagementRate: 0,
+    longFormCount: 0,
+    midFormCount: 0,
+    shortFormCount: 0,
+    competing50kCount: 0,
+    docGapLabel: 'Unverified — Click Refresh YouTube Metrics',
+    videos: [],
+  };
+
   const handleRefreshResearch = async () => {
     setBusy(true);
     try {
@@ -974,55 +1019,265 @@ export const OpportunityDetailPage: React.FC = () => {
             <p className="text-xs text-nexa-text-secondary leading-relaxed">{detail.achievement}</p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 shrink-0">
-            <div className="px-4 py-2.5 rounded-2xl bg-nexa-brand/10 border border-nexa-brand/25 text-right">
+          <div className="flex flex-col sm:flex-row lg:items-start gap-3 shrink-0 w-full lg:w-auto">
+            <div className="px-4 py-2.5 rounded-2xl bg-nexa-brand/10 border border-nexa-brand/25 text-center sm:text-right shrink-0">
               <div className="text-[10px] font-extrabold uppercase text-nexa-brand">Opportunity Score</div>
               <div className="text-2xl font-black text-display text-nexa-brand">
                 {Number(detail.overallScore).toFixed(1)} / 100
               </div>
             </div>
-            <button
-              onClick={handleToggleArchiveDetail}
-              disabled={busy}
-              className="px-4 py-2.5 rounded-full border border-nexa-border hover:border-amber-500 text-xs font-extrabold text-nexa-text-secondary hover:text-amber-500 flex items-center gap-1.5 cursor-pointer"
-            >
-              {detail.status === 'archived' ? (
-                <>
-                  <ArchiveRestore className="w-3.5 h-3.5" /> Restore
-                </>
-              ) : (
-                <>
-                  <Archive className="w-3.5 h-3.5" /> Archive
-                </>
-              )}
-            </button>
-            <button
-              onClick={handleRefreshResearch}
-              disabled={busy || reprocessing}
-              className="px-4 py-2.5 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-extrabold text-nexa-text-primary cursor-pointer"
-            >
-              Run Deep Fact Verification
-            </button>
-            {detail.projectId && (
+            <div className="flex flex-col items-start sm:items-end gap-2">
               <button
-                onClick={handleRerunScriptProcessing}
+                onClick={handleApproveForDocumentary}
                 disabled={busy || reprocessing}
-                className="px-4 py-2.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
+                className="w-fit px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold flex items-center gap-2 shadow-lg shadow-nexa-brand/25 cursor-pointer whitespace-nowrap"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${reprocessing ? 'animate-spin' : ''}`} />
-                {reprocessing ? 'Reprocessing Script...' : 'Rerun Script Processing'}
+                <Film className="w-4 h-4" />
+                {detail.projectId ? 'Open Documentary Workspace →' : 'Approve & Generate Documentary →'}
               </button>
-            )}
-            <button
-              onClick={handleApproveForDocumentary}
-              disabled={busy || reprocessing}
-              className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold flex items-center gap-2 shadow-lg shadow-nexa-brand/25 cursor-pointer"
-            >
-              <Film className="w-4 h-4" />
-              {detail.projectId ? 'Open Documentary Workspace →' : 'Approve & Generate Documentary →'}
-            </button>
+              {detail.projectId && (
+                <button
+                  onClick={handleRerunScriptProcessing}
+                  disabled={busy || reprocessing}
+                  className="w-fit px-4 py-2.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 text-xs font-extrabold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${reprocessing ? 'animate-spin' : ''}`} />
+                  {reprocessing ? 'Reprocessing Script...' : 'Rerun Script Processing'}
+                </button>
+              )}
+              <button
+                onClick={handleRefreshResearch}
+                disabled={busy || reprocessing}
+                className="w-fit px-4 py-2.5 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-extrabold text-nexa-text-primary cursor-pointer whitespace-nowrap"
+              >
+                Run Deep Fact Verification
+              </button>
+              <button
+                onClick={handleToggleArchiveDetail}
+                disabled={busy}
+                className="w-fit px-4 py-2.5 rounded-full border border-nexa-border hover:border-amber-500 text-xs font-extrabold text-nexa-text-secondary hover:text-amber-500 flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                {detail.status === 'archived' ? (
+                  <>
+                    <ArchiveRestore className="w-3.5 h-3.5" /> Restore
+                  </>
+                ) : (
+                  <>
+                    <Archive className="w-3.5 h-3.5" /> Archive
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
+      </div>
+
+      {/* YouTube Market Intelligence, Format Gap & Breakout Videos */}
+      <div className="nexa-card rounded-3xl p-6 space-y-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-black text-display text-nexa-text-primary flex items-center gap-2">
+              <PlayCircle className="w-4 h-4 text-rose-500" />
+              YouTube Intelligence &amp; Documentary Market Gap
+            </h2>
+            <p className="text-xs text-nexa-text-secondary mt-0.5">
+              Live YouTube Data API v3 velocity, true channel-baseline outlier scores, engagement ratios, and long-form vs. shorts saturation.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleRefreshYouTubeIntel}
+            disabled={ytBusy}
+            className="px-4 py-2 rounded-full bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-md shadow-rose-600/20 cursor-pointer shrink-0"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${ytBusy ? 'animate-spin' : ''}`} />
+            {ytBusy ? 'Pulling Live YouTube Stats...' : 'Refresh Live YouTube Metrics'}
+          </button>
+        </div>
+
+        {/* Documentary Format Gap Banner */}
+        <div
+          className={`p-3.5 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs ${
+            ytIntel.longFormCount === 0 && ytIntel.videoCount > 0
+              ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-400'
+              : ytIntel.longFormCount <= 1 && ytIntel.videoCount > 0
+                ? 'bg-nexa-brand/10 border-nexa-brand/25 text-nexa-brand'
+                : 'bg-nexa-bg-base border-nexa-border text-nexa-text-secondary'
+          }`}
+        >
+          <div className="font-extrabold">
+            Documentary Supply Verdict: <span className="font-black">{ytIntel.docGapLabel}</span>
+          </div>
+          <div className="flex items-center gap-3 text-[11px] font-bold flex-wrap">
+            <span>Long-Form (8m+): {ytIntel.longFormCount}</span>
+            <span>Mid-Form (1–8m): {ytIntel.midFormCount}</span>
+            <span>Shorts (&lt;60s): {ytIntel.shortFormCount}</span>
+          </div>
+        </div>
+
+        {/* 6 YouTube KPI Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border">
+            <div className="text-[10px] font-extrabold uppercase text-nexa-text-muted">Peak Velocity</div>
+            <div className="text-lg font-black text-display text-nexa-text-primary mt-1">
+              {Number(ytIntel.peakViewsPerHour || 0).toLocaleString()}
+              <span className="text-[10px] font-bold text-nexa-text-muted ml-1">VPH</span>
+            </div>
+            <div className="text-[10px] text-nexa-text-secondary font-semibold mt-0.5">
+              {Number(ytIntel.peakViewsPerDay || 0).toLocaleString()} views/day
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border">
+            <div className="text-[10px] font-extrabold uppercase text-nexa-text-muted">Top Outlier Score</div>
+            <div className="text-lg font-black text-display text-emerald-500 mt-1">
+              {Number(ytIntel.topOutlierMultiplier || 1).toFixed(1)}x
+            </div>
+            <div className="text-[10px] text-nexa-text-secondary font-semibold mt-0.5">
+              vs. channel avg views
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border">
+            <div className="text-[10px] font-extrabold uppercase text-nexa-text-muted">Avg Engagement</div>
+            <div className="text-lg font-black text-display text-nexa-brand mt-1">
+              {Number(ytIntel.avgEngagementRate || 0).toFixed(2)}%
+            </div>
+            <div className="text-[10px] text-nexa-text-secondary font-semibold mt-0.5">
+              (Likes + Comments) / Views
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border">
+            <div className="text-[10px] font-extrabold uppercase text-nexa-text-muted">Tracked Reach</div>
+            <div className="text-lg font-black text-display text-nexa-text-primary mt-1">
+              {Number(ytIntel.totalViews || 0).toLocaleString()}
+            </div>
+            <div className="text-[10px] text-nexa-text-secondary font-semibold mt-0.5">
+              Across {ytIntel.videoCount} video{ytIntel.videoCount === 1 ? '' : 's'}
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border">
+            <div className="text-[10px] font-extrabold uppercase text-nexa-text-muted">Audience Interaction</div>
+            <div className="text-sm font-black text-display text-nexa-text-primary mt-1.5 flex items-center gap-1.5">
+              <ThumbsUp className="w-3.5 h-3.5 text-nexa-brand shrink-0" />
+              {Number(ytIntel.totalLikes || 0).toLocaleString()}
+            </div>
+            <div className="text-[10px] text-nexa-text-secondary font-semibold mt-0.5 flex items-center gap-1">
+              <MessageSquare className="w-3 h-3 shrink-0" />
+              {Number(ytIntel.totalComments || 0).toLocaleString()} comments
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border">
+            <div className="text-[10px] font-extrabold uppercase text-nexa-text-muted">50k+ Competitors</div>
+            <div className="text-lg font-black text-display text-amber-500 mt-1">
+              {ytIntel.competing50kCount}
+            </div>
+            <div className="text-[10px] text-nexa-text-secondary font-semibold mt-0.5">
+              Sat. Risk: {detail.saturationRisk}%
+            </div>
+          </div>
+        </div>
+
+        {/* Tracked YouTube Breakout & Competing Videos Table/Cards */}
+        {(ytIntel.videos || []).length > 0 ? (
+          <div className="space-y-3">
+            <div className="text-xs font-extrabold uppercase text-nexa-text-muted">
+              Top Competing &amp; Breakout YouTube Videos ({ytIntel.videos.length})
+            </div>
+            <div className="space-y-2.5">
+              {(ytIntel.videos || []).map((v: any) => (
+                <div
+                  key={v.id}
+                  className="p-3.5 rounded-2xl bg-nexa-bg-base border border-nexa-border hover:border-nexa-brand/40 transition flex flex-col md:flex-row gap-4 items-start md:items-center"
+                >
+                  {v.thumbnailUrl && (
+                    <a
+                      href={v.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="relative w-full md:w-36 aspect-video rounded-xl overflow-hidden border border-nexa-border shrink-0 bg-black"
+                    >
+                      <img src={v.thumbnailUrl} alt={v.title} className="w-full h-full object-cover" />
+                      {v.durationSeconds > 0 && (
+                        <span className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/80 text-white text-[10px] font-extrabold font-mono">
+                          {formatVideoDuration(v.durationSeconds)}
+                        </span>
+                      )}
+                    </a>
+                  )}
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${
+                          String(v.videoFormat || '').includes('Long-Form')
+                            ? 'bg-purple-500/10 text-purple-500 border-purple-500/25'
+                            : String(v.videoFormat || '').includes('Short')
+                              ? 'bg-rose-500/10 text-rose-500 border-rose-500/25'
+                              : 'bg-nexa-bg-surface text-nexa-text-secondary border-nexa-border'
+                        }`}
+                      >
+                        {v.videoFormat || 'Standard'}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/10 text-emerald-500 border border-emerald-500/25">
+                        {Number(v.channelRelativeMultiplier || 1).toFixed(1)}x vs. channel avg
+                      </span>
+                      <span className="text-[11px] text-nexa-text-muted font-semibold">
+                        Published {v.publishedAt}
+                      </span>
+                    </div>
+                    <a
+                      href={v.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs font-extrabold text-nexa-text-primary hover:text-nexa-brand inline-flex items-center gap-1.5"
+                    >
+                      <span className="line-clamp-1">{v.title}</span>
+                      <ExternalLink className="w-3 h-3 shrink-0" />
+                    </a>
+                    <div className="flex items-center gap-3 flex-wrap text-[11px] text-nexa-text-secondary font-semibold">
+                      <span className="inline-flex items-center gap-1">
+                        <Users className="w-3 h-3 text-nexa-text-muted" />
+                        {v.channelName}
+                        {v.channelSubscribers > 0 && ` (${Number(v.channelSubscribers).toLocaleString()} subs)`}
+                      </span>
+                      {v.channelBaselineViews > 0 && (
+                        <span className="text-nexa-text-muted">
+                          • Channel avg: {Number(v.channelBaselineViews).toLocaleString()} views/vid
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 md:grid-cols-1 gap-2 md:text-right shrink-0 w-full md:w-auto border-t md:border-t-0 md:border-l border-nexa-border pt-2.5 md:pt-0 md:pl-4">
+                    <div>
+                      <div className="text-xs font-black text-display text-nexa-text-primary">
+                        {Number(v.views || 0).toLocaleString()} views
+                      </div>
+                      <div className="text-[10px] font-bold text-nexa-brand">
+                        {Number(v.viewsPerHour || 0).toLocaleString()} VPH
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-nexa-text-secondary font-semibold">
+                      {Number(v.likes || 0).toLocaleString()} likes • {Number(v.comments || 0).toLocaleString()} comments
+                    </div>
+                    <div className="text-[10px] font-extrabold text-emerald-500">
+                      {v.engagementRate > 0 ? `${Number(v.engagementRate).toFixed(2)}% engagement` : 'Engagement N/A'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="p-6 rounded-2xl border border-dashed border-nexa-border bg-nexa-bg-base/40 text-center space-y-2">
+            <div className="text-xs font-bold text-nexa-text-primary">No live YouTube videos analyzed for this opportunity yet.</div>
+            <p className="text-[11px] text-nexa-text-secondary">
+              Click <strong>Refresh Live YouTube Metrics</strong> above to pull top competing videos, channel baselines, durations, engagement rates, and the long-form documentary gap.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Video Description, High-Performing Tags & Hashtags */}

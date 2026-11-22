@@ -638,6 +638,11 @@ ALTER TABLE discoveries ADD COLUMN IF NOT EXISTS video_tags_json TEXT NOT NULL D
 ALTER TABLE discoveries ADD COLUMN IF NOT EXISTS video_hashtags_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE documentary_projects ADD COLUMN IF NOT EXISTS youtube_tags_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE documentary_projects ADD COLUMN IF NOT EXISTS youtube_hashtags_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS duration_seconds INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_format TEXT NOT NULL DEFAULT 'Standard';
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS engagement_rate DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS channel_baseline_views DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_url TEXT NOT NULL DEFAULT '';
 `
 	_, err := conn.ExecContext(ctx, schema)
 	return err

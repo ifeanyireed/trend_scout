@@ -65,6 +65,30 @@ func TestParseChannelBaselineFromHTML(t *testing.T) {
 	}
 }
 
+func TestYouTubeDurationFormatAndEngagement(t *testing.T) {
+	if got := ParseISO8601Duration("PT18M42S"); got != 1122 {
+		t.Fatalf("expected 1122s, got %d", got)
+	}
+	if got := ParseISO8601Duration("PT1H2M5S"); got != 3725 {
+		t.Fatalf("expected 3725s, got %d", got)
+	}
+	if got := ParseISO8601Duration("PT59S"); got != 59 {
+		t.Fatalf("expected 59s, got %d", got)
+	}
+	if got := ClassifyVideoFormat(59, "59 Seconds #shorts"); got != "Short (<60s)" {
+		t.Fatalf("expected Short (<60s), got %q", got)
+	}
+	if got := ClassifyVideoFormat(240, "Press interview clip"); got != "Mid-Form (1–8m)" {
+		t.Fatalf("expected Mid-Form (1–8m), got %q", got)
+	}
+	if got := ClassifyVideoFormat(1122, "Full Documentary"); got != "Long-Form (8m+)" {
+		t.Fatalf("expected Long-Form (8m+), got %q", got)
+	}
+	if got := ComputeEngagementRate(100_000, 5_500, 500); got != 6.0 {
+		t.Fatalf("expected 6.0%% engagement rate, got %.2f%%", got)
+	}
+}
+
 func TestLiveYouTubeDataAPIV3(t *testing.T) {
 	if os.Getenv("RUN_LIVE_YT_TEST") != "1" {
 		t.Skip("set RUN_LIVE_YT_TEST=1 to verify live YouTube Data API v3 lookup")

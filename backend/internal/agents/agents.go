@@ -513,17 +513,29 @@ func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCyc
 					INSERT INTO videos (
 						id, person_id, discovery_id, external_video_id, platform, title, channel_name,
 						channel_subscribers, url, views, likes, comments, views_per_hour, views_per_day,
-						channel_relative_multiplier, published_at
-					) VALUES ($1,$2,$3,$4,'YouTube',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+						channel_relative_multiplier, published_at, duration_seconds, video_format,
+						engagement_rate, channel_baseline_views, thumbnail_url
+					) VALUES ($1,$2,$3,$4,'YouTube',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 					ON CONFLICT (external_video_id) DO UPDATE SET
 						views = EXCLUDED.views,
+						likes = EXCLUDED.likes,
+						comments = EXCLUDED.comments,
+						channel_subscribers = EXCLUDED.channel_subscribers,
 						views_per_hour = EXCLUDED.views_per_hour,
 						views_per_day = EXCLUDED.views_per_day,
+						channel_relative_multiplier = EXCLUDED.channel_relative_multiplier,
+						duration_seconds = EXCLUDED.duration_seconds,
+						video_format = EXCLUDED.video_format,
+						engagement_rate = EXCLUDED.engagement_rate,
+						channel_baseline_views = EXCLUDED.channel_baseline_views,
+						thumbnail_url = EXCLUDED.thumbnail_url,
 						recorded_at = NOW()
 				`, "vid-"+uuid.NewString()[:8], personID, discID, cand.Video.ExternalID, cand.Video.Title,
 					cand.Video.ChannelName, cand.Video.ChannelSubscribers, cand.Video.VideoURL,
 					cand.Video.Views, cand.Video.Likes, cand.Video.Comments,
-					cand.Video.ViewsPerHour, cand.Video.ViewsPerDay, cand.Video.ChannelMultiplier, cand.Video.PublishedAt)
+					cand.Video.ViewsPerHour, cand.Video.ViewsPerDay, cand.Video.ChannelMultiplier, cand.Video.PublishedAt,
+					cand.Video.DurationSeconds, cand.Video.VideoFormat, cand.Video.EngagementRate,
+					cand.Video.ChannelBaselineViews, cand.Video.ThumbnailURL)
 			}
 
 			if cand.Social != nil {
@@ -692,6 +704,73 @@ func RunTrendMonitoringCycle(ctx context.Context) (int, error) {
 		updated++
 	}
 	return updated, nil
+}
+
+// RefreshDiscoveryYouTubeMetrics fetches live YouTube Data API v3 intelligence (up to 5 top videos,
+// real channel baselines, durations, format gap, and engagement rates) for an opportunity and persists it.
+func RefreshDiscoveryYouTubeMetrics(ctx context.Context, discoveryID string) (int, error) {
+	var personID, personName, stage string
+	var cov int
+	err := db.DB.QueryRowContext(ctx, `
+		SELECT d.person_id, p.canonical_name, d.trend_stage, d.independent_coverage_count
+		FROM discoveries d
+		JOIN people p ON p.id = d.person_id
+		WHERE d.id = $1
+	`, discoveryID).Scan(&personID, &personName, &stage, &cov)
+	if err != nil {
+		return 0, err
+	}
+
+	aiCfg := ai.GetAIConfig(ctx)
+	videos, err := connectors.LookupYouTubeIntelForPerson(ctx, personName, aiCfg.YouTubeAPIKey)
+	if err != nil || len(videos) == 0 {
+		return 0, err
+	}
+
+	for _, v := range videos {
+		_, _ = db.DB.ExecContext(ctx, `
+			INSERT INTO videos (
+				id, person_id, discovery_id, external_video_id, platform, title, channel_name,
+				channel_subscribers, url, views, likes, comments, views_per_hour, views_per_day,
+				channel_relative_multiplier, published_at, duration_seconds, video_format,
+				engagement_rate, channel_baseline_views, thumbnail_url
+			) VALUES ($1,$2,$3,$4,'YouTube',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+			ON CONFLICT (external_video_id) DO UPDATE SET
+				discovery_id = EXCLUDED.discovery_id,
+				views = EXCLUDED.views,
+				likes = EXCLUDED.likes,
+				comments = EXCLUDED.comments,
+				channel_subscribers = EXCLUDED.channel_subscribers,
+				views_per_hour = EXCLUDED.views_per_hour,
+				views_per_day = EXCLUDED.views_per_day,
+				channel_relative_multiplier = EXCLUDED.channel_relative_multiplier,
+				duration_seconds = EXCLUDED.duration_seconds,
+				video_format = EXCLUDED.video_format,
+				engagement_rate = EXCLUDED.engagement_rate,
+				channel_baseline_views = EXCLUDED.channel_baseline_views,
+				thumbnail_url = EXCLUDED.thumbnail_url,
+				recorded_at = NOW()
+		`, "vid-"+uuid.NewString()[:8], personID, discoveryID, v.ExternalID, v.Title,
+			v.ChannelName, v.ChannelSubscribers, v.VideoURL,
+			v.Views, v.Likes, v.Comments, v.ViewsPerHour, v.ViewsPerDay, v.ChannelMultiplier,
+			v.PublishedAt, v.DurationSeconds, v.VideoFormat, v.EngagementRate,
+			v.ChannelBaselineViews, v.ThumbnailURL)
+	}
+
+	top := videos[0]
+	newStage := stage
+	if top.ViewsPerHour >= 12000 || (top.Views >= 350000 && top.ChannelMultiplier >= 3.5) {
+		newStage = "Major Viral Opportunity"
+	} else if top.ViewsPerHour >= 3500 || (top.Views >= 100000 && top.ChannelMultiplier >= 2.0) {
+		newStage = "Accelerating"
+	} else if top.ViewsPerHour >= 500 || top.Views >= 15000 || cov >= 3 {
+		newStage = "Emerging"
+	}
+
+	_ = RecordTrendObservation(ctx, discoveryID, personID, newStage, top.Views, top.ViewsPerHour, top.ViewsPerDay, top.ChannelMultiplier, cov)
+	_, _ = db.DB.ExecContext(ctx, `UPDATE discoveries SET trend_stage = $2, updated_at = NOW() WHERE id = $1`, discoveryID, newStage)
+
+	return len(videos), nil
 }
 
 // 4. UNDERDOG ASSESSMENT & OPPORTUNITY SCORING AGENT

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -547,6 +548,23 @@ func RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		discID := parts[0]
+
+		if len(parts) == 3 && parts[1] == "youtube" && parts[2] == "refresh" && r.Method == http.MethodPost {
+			count, err := agents.RefreshDiscoveryYouTubeMetrics(r.Context(), discID)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			detail, err := getDiscoveryDetail(r.Context(), discID)
+			if err != nil {
+				writeJSON(w, 200, map[string]any{"ok": true, "videosRefreshed": count})
+				return
+			}
+			detail["ok"] = true
+			detail["videosRefreshed"] = count
+			writeJSON(w, 200, detail)
+			return
+		}
 
 		if len(parts) == 2 && parts[1] == "approve" && r.Method == http.MethodPost {
 			projID, err := approveDiscoveryForDocumentary(r.Context(), discID)
@@ -1526,6 +1544,93 @@ func getDiscoveryDetail(ctx interface {
 		vidHashtags = []string{}
 	}
 
+	// YouTube Intelligence: tracked breakout & competing videos + market/format gap summary
+	vRows, _ := db.DB.QueryContext(ctx, `
+		SELECT id, external_video_id, title, channel_name, channel_subscribers, url,
+		       views, likes, comments, views_per_hour, views_per_day, channel_relative_multiplier,
+		       published_at, COALESCE(duration_seconds, 0), COALESCE(video_format, 'Standard'),
+		       COALESCE(engagement_rate, 0), COALESCE(channel_baseline_views, 0), COALESCE(thumbnail_url, '')
+		FROM videos
+		WHERE discovery_id = $1 OR person_id = $2
+		ORDER BY views_per_hour DESC, views DESC
+		LIMIT 10
+	`, actualDiscID, personID)
+	ytVideos := make([]map[string]any, 0)
+	var totalYTViews, totalYTLikes, totalYTComments int64
+	var peakVPH, peakVPD, topOutlier, engRateSum float64
+	var engRateCount, longFormCount, shortFormCount, midFormCount, competing50k int
+	if vRows != nil {
+		for vRows.Next() {
+			var vid, extID, title, chName, vURL, pubAt, vFmt, thumb string
+			var chSubs, views, likes, comments int64
+			var durSec int
+			var vph, vpd, mult, engRate, chBase float64
+			if vRows.Scan(&vid, &extID, &title, &chName, &chSubs, &vURL, &views, &likes, &comments,
+				&vph, &vpd, &mult, &pubAt, &durSec, &vFmt, &engRate, &chBase, &thumb) == nil {
+				if engRate == 0 && views > 0 && (likes > 0 || comments > 0) {
+					engRate = math.Round((float64(likes+comments)/float64(views))*10000) / 100
+				}
+				if thumb == "" && strings.HasPrefix(extID, "yt-") {
+					thumb = fmt.Sprintf("https://i.ytimg.com/vi/%s/mqdefault.jpg", strings.TrimPrefix(extID, "yt-"))
+				}
+				totalYTViews += views
+				totalYTLikes += likes
+				totalYTComments += comments
+				if vph > peakVPH {
+					peakVPH = vph
+				}
+				if vpd > peakVPD {
+					peakVPD = vpd
+				}
+				if mult > topOutlier {
+					topOutlier = mult
+				}
+				if engRate > 0 {
+					engRateSum += engRate
+					engRateCount++
+				}
+				if views >= 50_000 {
+					competing50k++
+				}
+				switch {
+				case strings.Contains(vFmt, "Long-Form"):
+					longFormCount++
+				case strings.Contains(vFmt, "Short"):
+					shortFormCount++
+				case strings.Contains(vFmt, "Mid-Form"):
+					midFormCount++
+				}
+				ytVideos = append(ytVideos, map[string]any{
+					"id": vid, "externalVideoId": extID, "title": title, "channelName": chName,
+					"channelSubscribers": chSubs, "url": vURL, "views": views, "likes": likes,
+					"comments": comments, "viewsPerHour": vph, "viewsPerDay": vpd,
+					"channelRelativeMultiplier": mult, "publishedAt": pubAt,
+					"durationSeconds": durSec, "videoFormat": vFmt, "engagementRate": engRate,
+					"channelBaselineViews": chBase, "thumbnailUrl": thumb,
+				})
+			}
+		}
+		vRows.Close()
+	}
+
+	avgEngRate := 0.0
+	if engRateCount > 0 {
+		avgEngRate = math.Round((engRateSum/float64(engRateCount))*100) / 100
+	}
+	docGapLabel := "Unverified — Click Refresh YouTube Metrics"
+	if len(ytVideos) > 0 {
+		switch {
+		case longFormCount == 0:
+			docGapLabel = "Wide Open Documentary Gap (0 Long-Form Videos)"
+		case longFormCount <= 1 && competing50k <= 3:
+			docGapLabel = "Strong Opportunity (Low Long-Form Competition)"
+		case longFormCount <= 2:
+			docGapLabel = "Moderate Competition (Room for Prestige Angle)"
+		default:
+			docGapLabel = "Crowded Long-Form Market (Differentiation Needed)"
+		}
+	}
+
 	target["underdogAssessment"] = map[string]any{
 		"classification":          classification,
 		"originsSummary":          origins,
@@ -1548,6 +1653,22 @@ func getDiscoveryDetail(ctx interface {
 	target["videoTags"] = vidTags
 	target["videoHashtags"] = vidHashtags
 	target["tagsCharCount"] = agents.TagsTotalChars(vidTags)
+	target["youtubeIntelligence"] = map[string]any{
+		"videoCount":           len(ytVideos),
+		"totalViews":           totalYTViews,
+		"totalLikes":           totalYTLikes,
+		"totalComments":        totalYTComments,
+		"peakViewsPerHour":     peakVPH,
+		"peakViewsPerDay":      peakVPD,
+		"topOutlierMultiplier": topOutlier,
+		"avgEngagementRate":    avgEngRate,
+		"longFormCount":        longFormCount,
+		"midFormCount":         midFormCount,
+		"shortFormCount":       shortFormCount,
+		"competing50kCount":    competing50k,
+		"docGapLabel":          docGapLabel,
+		"videos":               ytVideos,
+	}
 
 	return target, nil
 }
