@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,51 +21,56 @@ const UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) TrendScoutStu
 const WikiUserAgent = "TrendScoutStudio/2.0 (https://trendscout.studio; research@trendscout.studio)"
 
 type VideoMetric struct {
-	Title              string  `json:"title"`
-	Views              int64   `json:"views"`
-	Likes              int64   `json:"likes"`
-	Comments           int64   `json:"comments"`
-	ChannelName        string  `json:"channelName"`
-	ChannelSubscribers int64   `json:"channelSubscribers"`
-	VideoURL           string  `json:"videoUrl"`
-	ExternalID         string  `json:"externalId"`
-	PublishedAt        string  `json:"publishedAt"`
-	ViewsPerHour       float64 `json:"viewsPerHour"`
-	ViewsPerDay        float64 `json:"viewsPerDay"`
-	ChannelMultiplier  float64 `json:"channelMultiplier"`
+	Title                string  `json:"title"`
+	Views                int64   `json:"views"`
+	Likes                int64   `json:"likes"`
+	Comments             int64   `json:"comments"`
+	ChannelID            string  `json:"channelId,omitempty"`
+	ChannelName          string  `json:"channelName"`
+	ChannelSubscribers   int64   `json:"channelSubscribers"`
+	ChannelBaselineViews float64 `json:"channelBaselineViews,omitempty"`
+	CompetingVideosCount int     `json:"competingVideosCount,omitempty"`
+	VideoURL             string  `json:"videoUrl"`
+	ExternalID           string  `json:"externalId"`
+	PublishedAt          string  `json:"publishedAt"`
+	ViewsPerHour         float64 `json:"viewsPerHour"`
+	ViewsPerDay          float64 `json:"viewsPerDay"`
+	ChannelMultiplier    float64 `json:"channelMultiplier"`
 }
 
 type SocialMetric struct {
-	Platform    string `json:"platform"`
-	ExternalID  string `json:"externalId"`
-	Author      string `json:"author"`
-	Subreddit   string `json:"subreddit"`
-	Content     string `json:"content"`
-	URL         string `json:"url"`
-	Upvotes     int64  `json:"upvotes"`
-	Comments    int64  `json:"comments"`
-	Shares      int64  `json:"shares"`
-	PublishedAt string `json:"publishedAt"`
+	Platform    string  `json:"platform"`
+	ExternalID  string  `json:"externalId"`
+	Author      string  `json:"author"`
+	Subreddit   string  `json:"subreddit"`
+	Content     string  `json:"content"`
+	URL         string  `json:"url"`
+	Upvotes     int64   `json:"upvotes"`
+	Comments    int64   `json:"comments"`
+	Shares      int64   `json:"shares"`
+	AgeHours    float64 `json:"ageHours,omitempty"`
+	PublishedAt string  `json:"publishedAt"`
 }
 
 type DiscoveredCandidate struct {
-	SourceID    string        `json:"sourceId"`
-	PersonName  string        `json:"personName"`
-	Aliases     []string      `json:"aliases"`
-	Category    string        `json:"category"`
-	Country     string        `json:"country"`
-	EventTitle  string        `json:"eventTitle"`
-	EventDate   string        `json:"eventDate"`
-	Achievement string        `json:"achievement"`
-	Headline    string        `json:"headline"`
-	SourceURL   string        `json:"sourceUrl"`
-	Publisher   string        `json:"publisher"`
-	Platform    string        `json:"platform"`
-	Summary     string        `json:"summary"`
-	ImageURL    string        `json:"imageUrl"`
-	WikiExtract string        `json:"wikiExtract"`
-	Video       *VideoMetric  `json:"video,omitempty"`
-	Social      *SocialMetric `json:"social,omitempty"`
+	SourceID      string        `json:"sourceId"`
+	PersonName    string        `json:"personName"`
+	Aliases       []string      `json:"aliases"`
+	Category      string        `json:"category"`
+	Country       string        `json:"country"`
+	EventTitle    string        `json:"eventTitle"`
+	EventDate     string        `json:"eventDate"`
+	Achievement   string        `json:"achievement"`
+	Headline      string        `json:"headline"`
+	SourceURL     string        `json:"sourceUrl"`
+	Publisher     string        `json:"publisher"`
+	Platform      string        `json:"platform"`
+	Summary       string        `json:"summary"`
+	ImageURL      string        `json:"imageUrl"`
+	WikiExtract   string        `json:"wikiExtract"`
+	SearchTraffic int64         `json:"searchTraffic,omitempty"`
+	Video         *VideoMetric  `json:"video,omitempty"`
+	Social        *SocialMetric `json:"social,omitempty"`
 }
 
 type WikiSection struct {
@@ -614,6 +620,7 @@ func DiscoverRedditBreakouts(ctx context.Context) []DiscoveredCandidate {
 					continue
 				}
 				dt := time.Unix(int64(p.CreatedUTC), 0).Format("2006-01-02")
+				ageHours := math.Max(1.0, time.Since(time.Unix(int64(p.CreatedUTC), 0)).Hours())
 				postURL := fmt.Sprintf("https://www.reddit.com%s", p.Permalink)
 				local = append(local, DiscoveredCandidate{
 					SourceID:    "src-reddit",
@@ -637,7 +644,8 @@ func DiscoverRedditBreakouts(ctx context.Context) []DiscoveredCandidate {
 						URL:         postURL,
 						Upvotes:     p.Ups,
 						Comments:    p.NumComments,
-						Shares:      p.NumComments / 4,
+						Shares:      0,
+						AgeHours:    ageHours,
 						PublishedAt: dt,
 					},
 				})
@@ -724,18 +732,19 @@ func DiscoverGoogleTrends(ctx context.Context) []DiscoveredCandidate {
 					pub = fmt.Sprintf("%s (Google Trends %s)", pub, item.Traffic)
 				}
 				local = append(local, DiscoveredCandidate{
-					SourceID:    "src-google-trends",
-					PersonName:  trendTitle,
-					Category:    "Global Breakout Trend",
-					Country:     region,
-					EventTitle:  newsTitle,
-					EventDate:   time.Now().Format("2006-01-02"),
-					Achievement: newsTitle,
-					Headline:    newsTitle,
-					SourceURL:   link,
-					Publisher:   pub,
-					Platform:    "Google Trends",
-					Summary:     fmt.Sprintf("Google Trends surge (%s searches in %s): %s", item.Traffic, region, newsTitle),
+					SourceID:      "src-google-trends",
+					PersonName:    trendTitle,
+					Category:      "Global Breakout Trend",
+					Country:       region,
+					EventTitle:    newsTitle,
+					EventDate:     time.Now().Format("2006-01-02"),
+					Achievement:   newsTitle,
+					Headline:      newsTitle,
+					SourceURL:     link,
+					Publisher:     pub,
+					Platform:      "Google Trends",
+					Summary:       fmt.Sprintf("Google Trends surge (%s searches in %s): %s", item.Traffic, region, newsTitle),
+					SearchTraffic: ParseCompactCount(item.Traffic),
 				})
 			}
 			if len(local) > 0 {
@@ -862,13 +871,132 @@ func DiscoverWikipediaBreakouts(ctx context.Context, queries []string) []Discove
 	return out
 }
 
-// 5. REAL YOUTUBE VIDEO & VELOCITY LOOKUP (YouTube Data API v3 + Public YouTube Search JSON Fallback)
+// 5. REAL YOUTUBE VIDEO, CHANNEL BASELINE & VELOCITY LOOKUP (YouTube Data API v3 + Public Channel Baseline Extraction)
 var (
-	ytVideoBlockRe = regexp.MustCompile(`"videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})".*?"title":\{"runs":\[\{"text":"([^"]+)"\}\]`)
-	ytViewsRe      = regexp.MustCompile(`"viewCountText":\{"simpleText":"([0-9,]+)\s+views"\}`)
-	ytPubTimeRe    = regexp.MustCompile(`"publishedTimeText":\{"simpleText":"([^"]+)"\}`)
-	ytOwnerRe      = regexp.MustCompile(`"ownerText":\{"runs":\[\{"text":"([^"]+)"`)
+	ytVideoBlockRe     = regexp.MustCompile(`"videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})".*?"title":\{"runs":\[\{"text":"([^"]+)"\}\]`)
+	ytViewsRe          = regexp.MustCompile(`"viewCountText":\{"simpleText":"([0-9,\.]+[KMBkmb]?)\s+views?"\}`)
+	ytShortViewsRe     = regexp.MustCompile(`"shortViewCountText":\{[^}]*"simpleText":"([0-9,\.]+[KMBkmb]?)\s+views?"`)
+	ytPubTimeRe        = regexp.MustCompile(`"publishedTimeText":\{"simpleText":"([^"]+)"\}`)
+	ytOwnerRe          = regexp.MustCompile(`"ownerText":\{"runs":\[\{"text":"([^"]+)"`)
+	ytBrowseIDRe       = regexp.MustCompile(`"browseId":"(UC[a-zA-Z0-9_-]{20,28})"`)
+	ytSubscriberRe     = regexp.MustCompile(`"subscriberCountText":\{[^}]*"(?:simpleText|text)":"([0-9,\.]+[KMBkmb]?)\s+subscribers?"`)
+	ytCompactNumRegexp = regexp.MustCompile(`([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)\s*([KMBkmb])?`)
 )
+
+// ParseCompactCount converts human-formatted counts ("1.42M subscribers", "84.5K views", "500,000+", "20K+") into int64.
+func ParseCompactCount(raw string) int64 {
+	m := ytCompactNumRegexp.FindStringSubmatch(strings.TrimSpace(raw))
+	if len(m) < 2 {
+		return 0
+	}
+	numStr := strings.ReplaceAll(m[1], ",", "")
+	val, err := strconv.ParseFloat(numStr, 64)
+	if err != nil || val <= 0 {
+		return 0
+	}
+	suffix := ""
+	if len(m) > 2 {
+		suffix = strings.ToUpper(strings.TrimSpace(m[2]))
+	}
+	switch suffix {
+	case "K":
+		val *= 1_000
+	case "M":
+		val *= 1_000_000
+	case "B":
+		val *= 1_000_000_000
+	}
+	return int64(math.Round(val))
+}
+
+// ComputeMedian returns the median of positive int64 samples.
+func ComputeMedian(vals []int64) float64 {
+	var clean []int64
+	for _, v := range vals {
+		if v > 0 {
+			clean = append(clean, v)
+		}
+	}
+	if len(clean) == 0 {
+		return 0
+	}
+	sort.Slice(clean, func(i, j int) bool { return clean[i] < clean[j] })
+	mid := len(clean) / 2
+	if len(clean)%2 == 1 {
+		return float64(clean[mid])
+	}
+	return float64(clean[mid-1]+clean[mid]) / 2.0
+}
+
+// ComputeChannelRelativeMultiplier compares a video's actual views against the channel's baseline
+// average/median views per video. Returns a neutral 1.0x when no real baseline is available,
+// and clamps extreme ratios cleanly to [0.2, 50.0].
+func ComputeChannelRelativeMultiplier(videoViews int64, channelBaselineViews float64) float64 {
+	if videoViews <= 0 || channelBaselineViews <= 0 {
+		return 1.0
+	}
+	ratio := float64(videoViews) / channelBaselineViews
+	if ratio < 0.2 {
+		ratio = 0.2
+	}
+	if ratio > 50.0 {
+		ratio = 50.0
+	}
+	return math.Round(ratio*10) / 10
+}
+
+// ParseChannelBaselineFromHTML extracts real subscriber count and median views across recent uploads
+// from a public YouTube channel /videos page.
+func ParseChannelBaselineFromHTML(html string) (subscribers int64, medianRecentViews float64) {
+	if sm := ytSubscriberRe.FindStringSubmatch(html); len(sm) > 1 {
+		subscribers = ParseCompactCount(sm[1])
+	}
+	var recentViews []int64
+	for _, m := range ytViewsRe.FindAllStringSubmatch(html, 15) {
+		if len(m) > 1 {
+			if v := ParseCompactCount(m[1]); v > 0 {
+				recentViews = append(recentViews, v)
+			}
+		}
+	}
+	if len(recentViews) == 0 {
+		for _, m := range ytShortViewsRe.FindAllStringSubmatch(html, 15) {
+			if len(m) > 1 {
+				if v := ParseCompactCount(m[1]); v > 0 {
+					recentViews = append(recentViews, v)
+				}
+			}
+		}
+	}
+	return subscribers, ComputeMedian(recentViews)
+}
+
+func fetchPublicChannelBaseline(ctx context.Context, client *http.Client, channelID string) (int64, float64) {
+	if !strings.HasPrefix(channelID, "UC") {
+		return 0, 0
+	}
+	chCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(chCtx, "GET", fmt.Sprintf("https://www.youtube.com/channel/%s/videos", channelID), nil)
+	if err != nil {
+		return 0, 0
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return 0, 0
+	}
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1_500_000))
+	resp.Body.Close()
+	if err != nil {
+		return 0, 0
+	}
+	return ParseChannelBaselineFromHTML(string(bodyBytes))
+}
 
 func parseRelativeHours(pubText string) float64 {
 	lower := strings.ToLower(strings.TrimSpace(pubText))
@@ -901,10 +1029,11 @@ func parseRelativeHours(pubText string) float64 {
 func LookupYouTubeVideoForPerson(ctx context.Context, personName string, youtubeAPIKey string) (*VideoMetric, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	// 1. If YOUTUBE_API_KEY is configured, use official YouTube Data API v3
+	// 1. If YOUTUBE_API_KEY is configured, use official YouTube Data API v3 with real channel baseline stats
 	if strings.TrimSpace(youtubeAPIKey) != "" {
-		q := url.QueryEscape(personName + " interview OR documentary OR final")
-		searchURL := fmt.Sprintf("https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=1&order=relevance&q=%s&key=%s", q, strings.TrimSpace(youtubeAPIKey))
+		apiKey := strings.TrimSpace(youtubeAPIKey)
+		q := url.QueryEscape(personName + " interview OR documentary OR story")
+		searchURL := fmt.Sprintf("https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=5&order=relevance&q=%s&key=%s", q, apiKey)
 		req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 		if err == nil {
 			if resp, err2 := client.Do(req); err2 == nil && resp.StatusCode == 200 {
@@ -915,6 +1044,7 @@ func LookupYouTubeVideoForPerson(ctx context.Context, personName string, youtube
 						} `json:"id"`
 						Snippet struct {
 							Title        string `json:"title"`
+							ChannelID    string `json:"channelId"`
 							ChannelTitle string `json:"channelTitle"`
 							PublishedAt  string `json:"publishedAt"`
 						} `json:"snippet"`
@@ -924,14 +1054,22 @@ func LookupYouTubeVideoForPerson(ctx context.Context, personName string, youtube
 				resp.Body.Close()
 
 				if len(sRes.Items) > 0 {
-					vid := sRes.Items[0]
-					videoID := vid.ID.VideoID
-					var views, likes, comments int64 = 45000, 1800, 210
-					statsURL := fmt.Sprintf("https://www.googleapis.com/youtube/v3/videos?part=statistics&id=%s&key=%s", videoID, strings.TrimSpace(youtubeAPIKey))
+					var ids []string
+					for _, it := range sRes.Items {
+						if it.ID.VideoID != "" {
+							ids = append(ids, it.ID.VideoID)
+						}
+					}
+					type vStat struct {
+						views, likes, comments int64
+					}
+					statsByID := map[string]vStat{}
+					statsURL := fmt.Sprintf("https://www.googleapis.com/youtube/v3/videos?part=statistics&id=%s&key=%s", strings.Join(ids, ","), apiKey)
 					if sReq, err3 := http.NewRequestWithContext(ctx, "GET", statsURL, nil); err3 == nil {
 						if sResp, err4 := client.Do(sReq); err4 == nil && sResp.StatusCode == 200 {
 							var stData struct {
 								Items []struct {
+									ID         string `json:"id"`
 									Statistics struct {
 										ViewCount    string `json:"viewCount"`
 										LikeCount    string `json:"likeCount"`
@@ -941,36 +1079,105 @@ func LookupYouTubeVideoForPerson(ctx context.Context, personName string, youtube
 							}
 							_ = json.NewDecoder(sResp.Body).Decode(&stData)
 							sResp.Body.Close()
-							if len(stData.Items) > 0 {
-								views, _ = strconv.ParseInt(stData.Items[0].Statistics.ViewCount, 10, 64)
-								likes, _ = strconv.ParseInt(stData.Items[0].Statistics.LikeCount, 10, 64)
-								comments, _ = strconv.ParseInt(stData.Items[0].Statistics.CommentCount, 10, 64)
+							for _, st := range stData.Items {
+								v, _ := strconv.ParseInt(st.Statistics.ViewCount, 10, 64)
+								l, _ := strconv.ParseInt(st.Statistics.LikeCount, 10, 64)
+								c, _ := strconv.ParseInt(st.Statistics.CommentCount, 10, 64)
+								statsByID[st.ID] = vStat{views: v, likes: l, comments: c}
 							}
 						}
 					}
-					hoursSince := 72.0
-					pubDate := time.Now().Format("2006-01-02")
-					if t, errT := time.Parse(time.RFC3339, vid.Snippet.PublishedAt); errT == nil {
-						hoursSince = math.Max(1.0, time.Since(t).Hours())
-						pubDate = t.Format("2006-01-02")
+
+					// Select the highest-velocity (VPH) real video & count competing videos >= 50k views
+					bestIdx := -1
+					bestVPH := -1.0
+					competingCount := 0
+					var peerViews []int64
+					for i, it := range sRes.Items {
+						st := statsByID[it.ID.VideoID]
+						if st.views <= 0 {
+							continue
+						}
+						peerViews = append(peerViews, st.views)
+						if st.views >= 50_000 {
+							competingCount++
+						}
+						hoursSince := 72.0
+						if t, errT := time.Parse(time.RFC3339, it.Snippet.PublishedAt); errT == nil {
+							hoursSince = math.Max(1.0, time.Since(t).Hours())
+						}
+						vph := float64(st.views) / hoursSince
+						if vph > bestVPH {
+							bestVPH = vph
+							bestIdx = i
+						}
 					}
-					vph := math.Max(15.0, math.Round(float64(views)/hoursSince))
-					vpd := math.Round(vph * 24.0)
-					mult := math.Round((2.0+math.Log10(math.Max(10, vph))*0.8)*10) / 10
-					return &VideoMetric{
-						Title:              vid.Snippet.Title,
-						Views:              views,
-						Likes:              likes,
-						Comments:           comments,
-						ChannelName:        vid.Snippet.ChannelTitle,
-						ChannelSubscribers: 250000,
-						VideoURL:           "https://www.youtube.com/watch?v=" + videoID,
-						ExternalID:         "yt-" + videoID,
-						PublishedAt:        pubDate,
-						ViewsPerHour:       vph,
-						ViewsPerDay:        vpd,
-						ChannelMultiplier:  mult,
-					}, nil
+
+					if bestIdx >= 0 {
+						vid := sRes.Items[bestIdx]
+						st := statsByID[vid.ID.VideoID]
+						hoursSince := 72.0
+						pubDate := time.Now().Format("2006-01-02")
+						if t, errT := time.Parse(time.RFC3339, vid.Snippet.PublishedAt); errT == nil {
+							hoursSince = math.Max(1.0, time.Since(t).Hours())
+							pubDate = t.Format("2006-01-02")
+						}
+
+						// Fetch real channel statistics to compute true channel average views per video
+						var subs int64
+						var channelBaseline float64
+						if vid.Snippet.ChannelID != "" {
+							chURL := fmt.Sprintf("https://www.googleapis.com/youtube/v3/channels?part=statistics&id=%s&key=%s", vid.Snippet.ChannelID, apiKey)
+							if cReq, errC := http.NewRequestWithContext(ctx, "GET", chURL, nil); errC == nil {
+								if cResp, errC2 := client.Do(cReq); errC2 == nil && cResp.StatusCode == 200 {
+									var chData struct {
+										Items []struct {
+											Statistics struct {
+												SubscriberCount string `json:"subscriberCount"`
+												ViewCount       string `json:"viewCount"`
+												VideoCount      string `json:"videoCount"`
+											} `json:"statistics"`
+										} `json:"items"`
+									}
+									_ = json.NewDecoder(cResp.Body).Decode(&chData)
+									cResp.Body.Close()
+									if len(chData.Items) > 0 {
+										subs, _ = strconv.ParseInt(chData.Items[0].Statistics.SubscriberCount, 10, 64)
+										chViews, _ := strconv.ParseInt(chData.Items[0].Statistics.ViewCount, 10, 64)
+										chVids, _ := strconv.ParseInt(chData.Items[0].Statistics.VideoCount, 10, 64)
+										if chViews > 0 && chVids > 0 {
+											channelBaseline = float64(chViews) / float64(chVids)
+										}
+									}
+								}
+							}
+						}
+						if channelBaseline <= 0 {
+							channelBaseline = ComputeMedian(peerViews)
+						}
+
+						vph := math.Round(float64(st.views) / hoursSince)
+						vpd := math.Round(vph * 24.0)
+						mult := ComputeChannelRelativeMultiplier(st.views, channelBaseline)
+
+						return &VideoMetric{
+							Title:                vid.Snippet.Title,
+							Views:                st.views,
+							Likes:                st.likes,
+							Comments:             st.comments,
+							ChannelID:            vid.Snippet.ChannelID,
+							ChannelName:          vid.Snippet.ChannelTitle,
+							ChannelSubscribers:   subs,
+							ChannelBaselineViews: math.Round(channelBaseline),
+							CompetingVideosCount: competingCount,
+							VideoURL:             "https://www.youtube.com/watch?v=" + vid.ID.VideoID,
+							ExternalID:           "yt-" + vid.ID.VideoID,
+							PublishedAt:          pubDate,
+							ViewsPerHour:         vph,
+							ViewsPerDay:          vpd,
+							ChannelMultiplier:    mult,
+						}, nil
+					}
 				}
 			} else if resp != nil {
 				resp.Body.Close()
@@ -978,7 +1185,7 @@ func LookupYouTubeVideoForPerson(ctx context.Context, personName string, youtube
 		}
 	}
 
-	// 2. Public YouTube Search Page Extraction (No API Key Required)
+	// 2. Public YouTube Search Page + Public Channel /videos Baseline Extraction (No API Key Required)
 	q := url.QueryEscape(personName + " story OR interview OR documentary")
 	searchPageURL := fmt.Sprintf("https://www.youtube.com/results?search_query=%s", q)
 	req, err := http.NewRequestWithContext(ctx, "GET", searchPageURL, nil)
@@ -996,63 +1203,113 @@ func LookupYouTubeVideoForPerson(ctx context.Context, personName string, youtube
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("youtube search status %d", resp.StatusCode)
 	}
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 2_000_000))
 	if err != nil {
 		return nil, err
 	}
 	html := string(bodyBytes)
 
-	vMatches := ytVideoBlockRe.FindAllStringSubmatchIndex(html, 5)
+	vMatches := ytVideoBlockRe.FindAllStringSubmatchIndex(html, 8)
 	if len(vMatches) == 0 {
 		return nil, fmt.Errorf("no youtube videoRenderer found")
 	}
 
-	first := vMatches[0]
-	videoID := html[first[2]:first[3]]
-	title := html[first[4]:first[5]]
-	title = strings.ReplaceAll(title, `\u0026`, "&")
-
-	windowEnd := first[1] + 2500
-	if windowEnd > len(html) {
-		windowEnd = len(html)
+	type parsedYT struct {
+		videoID     string
+		title       string
+		views       int64
+		hoursSince  float64
+		vph         float64
+		channelName string
+		channelID   string
 	}
-	snippetWindow := html[first[0]:windowEnd]
+	var candidates []parsedYT
+	var peerViews []int64
+	competingCount := 0
 
-	var views int64 = 18500
-	if vm := ytViewsRe.FindStringSubmatch(snippetWindow); len(vm) > 1 {
-		clean := strings.ReplaceAll(vm[1], ",", "")
-		if parsed, errP := strconv.ParseInt(clean, 10, 64); errP == nil && parsed > 0 {
-			views = parsed
+	for _, match := range vMatches {
+		videoID := html[match[2]:match[3]]
+		title := strings.ReplaceAll(html[match[4]:match[5]], `\u0026`, "&")
+		windowEnd := match[1] + 3200
+		if windowEnd > len(html) {
+			windowEnd = len(html)
+		}
+		snippet := html[match[0]:windowEnd]
+
+		var views int64
+		if vm := ytViewsRe.FindStringSubmatch(snippet); len(vm) > 1 {
+			views = ParseCompactCount(vm[1])
+		} else if sm := ytShortViewsRe.FindStringSubmatch(snippet); len(sm) > 1 {
+			views = ParseCompactCount(sm[1])
+		}
+		if views <= 0 {
+			continue
+		}
+
+		hoursSince := 72.0
+		if pm := ytPubTimeRe.FindStringSubmatch(snippet); len(pm) > 1 {
+			hoursSince = parseRelativeHours(pm[1])
+		}
+		channelName := "YouTube Channel"
+		if cm := ytOwnerRe.FindStringSubmatch(snippet); len(cm) > 1 {
+			channelName = cm[1]
+		}
+		channelID := ""
+		if bm := ytBrowseIDRe.FindStringSubmatch(snippet); len(bm) > 1 {
+			channelID = bm[1]
+		}
+
+		peerViews = append(peerViews, views)
+		if views >= 50_000 {
+			competingCount++
+		}
+		vph := math.Round(float64(views) / math.Max(1.0, hoursSince))
+		candidates = append(candidates, parsedYT{
+			videoID:     videoID,
+			title:       title,
+			views:       views,
+			hoursSince:  hoursSince,
+			vph:         vph,
+			channelName: channelName,
+			channelID:   channelID,
+		})
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no youtube videos with real view counts found")
+	}
+
+	// Pick the highest-velocity breakout video for this person
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.vph > best.vph {
+			best = c
 		}
 	}
 
-	hoursSince := 48.0
-	if pm := ytPubTimeRe.FindStringSubmatch(snippetWindow); len(pm) > 1 {
-		hoursSince = parseRelativeHours(pm[1])
+	// Fetch the actual channel's /videos page to compute true median baseline views & subscriber count
+	subs, channelBaseline := fetchPublicChannelBaseline(ctx, client, best.channelID)
+	if channelBaseline <= 0 {
+		channelBaseline = ComputeMedian(peerViews)
 	}
-
-	channelName := "YouTube Sports & Documentary Coverage"
-	if cm := ytOwnerRe.FindStringSubmatch(snippetWindow); len(cm) > 1 {
-		channelName = cm[1]
-	}
-
-	vph := math.Max(12.0, math.Round(float64(views)/math.Max(1.0, hoursSince)))
-	vpd := math.Round(vph * 24.0)
-	mult := math.Round((1.8+math.Log10(math.Max(10, vph))*0.85)*10) / 10
-	pubDate := time.Now().Add(-time.Duration(hoursSince) * time.Hour).Format("2006-01-02")
+	mult := ComputeChannelRelativeMultiplier(best.views, channelBaseline)
+	pubDate := time.Now().Add(-time.Duration(best.hoursSince) * time.Hour).Format("2006-01-02")
 
 	return &VideoMetric{
-		Title:              title,
-		Views:              views,
-		Likes:              views / 22,
-		Comments:           views / 160,
-		ChannelName:        channelName,
-		ChannelSubscribers: 150000,
-		VideoURL:           "https://www.youtube.com/watch?v=" + videoID,
-		ExternalID:         "yt-" + videoID,
-		PublishedAt:        pubDate,
-		ViewsPerHour:       vph,
-		ViewsPerDay:        vpd,
-		ChannelMultiplier:  mult,
+		Title:                best.title,
+		Views:                best.views,
+		Likes:                0, // Public search HTML does not expose real like counts
+		Comments:             0, // Public search HTML does not expose real comment counts
+		ChannelID:            best.channelID,
+		ChannelName:          best.channelName,
+		ChannelSubscribers:   subs,
+		ChannelBaselineViews: math.Round(channelBaseline),
+		CompetingVideosCount: competingCount,
+		VideoURL:             "https://www.youtube.com/watch?v=" + best.videoID,
+		ExternalID:           "yt-" + best.videoID,
+		PublishedAt:          pubDate,
+		ViewsPerHour:         best.vph,
+		ViewsPerDay:          math.Round(best.vph * 24.0),
+		ChannelMultiplier:    mult,
 	}, nil
 }
