@@ -1320,13 +1320,17 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 	domain := ResolveBiographicalDomain(category, bio, summary, headline, biographicalField)
 
 	if !ai.HasGeminiKey(ctx) {
-		return "", fmt.Errorf("Gemini AI required for documentary script generation: no Gemini API key configured in Settings")
+		return "", fmt.Errorf("AI required for documentary script generation: no AI API key configured in Settings")
 	}
 
 	// STAGE 0: Pre-Script YouTube Competitor Transcription, Comment Mining & Outperformance Positioning Brief (AI required)
-	competitiveBrief, competitiveBriefPrompt, errBrief := BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDurationMinutes)
-	if errBrief != nil {
-		return "", errBrief
+	competitiveBrief, competitiveBriefPrompt := LoadFreshCompetitiveBrief(ctx, projectID, 15*time.Minute)
+	if competitiveBrief == nil {
+		var errBrief error
+		competitiveBrief, competitiveBriefPrompt, errBrief = BuildProjectCompetitiveBrief(ctx, projectID, personID, discoveryID, personName, domain, targetDurationMinutes)
+		if errBrief != nil {
+			return "", errBrief
+		}
 	}
 	bioInput.CompetitiveBrief = competitiveBrief
 
@@ -1350,7 +1354,7 @@ func GenerateDocumentaryScriptWithOptions(ctx context.Context, projectID string,
 		style, biographicalField, bio, claimsBuilder.String(), assessmentSummary, competitiveBriefPrompt,
 	)
 	if errAI != nil || aiDoc == nil || len(aiDoc.Chapters) == 0 {
-		return "", fmt.Errorf("Gemini AI documentary script generation failed: %s", sanitizeAIErrorForUI(errAI))
+		return "", fmt.Errorf("%s AI documentary script generation failed: %s", ai.ActiveProviderLabel(ctx), sanitizeAIErrorForUI(errAI))
 	}
 
 	providerLabel := ai.ActiveProviderLabel(ctx)

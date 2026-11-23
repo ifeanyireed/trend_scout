@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -595,20 +596,27 @@ func RegisterRoutes(mux *http.ServeMux) {
 				req.BiographicalField = "auto"
 			}
 
-			projID, err := approveDiscoveryForDocumentary(r.Context(), discID)
+			projID, created, err := ensureDocumentaryProjectShell(r.Context(), discID)
 			if err != nil {
 				writeJSON(w, 500, map[string]string{"error": err.Error()})
 				return
 			}
 			scrID, err := agents.GenerateDocumentaryScriptWithOptions(r.Context(), projID, req.TargetDurationMinutes, req.Style, req.BiographicalField)
 			if err != nil {
+				if created {
+					_, _ = db.DB.ExecContext(r.Context(), `DELETE FROM documentary_projects WHERE id = $1`, projID)
+				}
 				writeJSON(w, 500, map[string]string{"error": err.Error()})
 				return
 			}
-			_, _ = agents.GenerateCharacterReferences(r.Context(), projID)
-			segCount, _ := agents.GenerateVisualTimeline(r.Context(), projID)
-			_, _, _ = agents.GenerateProjectAudioAndSubtitles(r.Context(), projID)
-			_, _ = agents.GenerateProjectVideoPackaging(r.Context(), projID)
+			var segCount int
+			var wg sync.WaitGroup
+			wg.Add(4)
+			go func() { defer wg.Done(); _, _ = agents.GenerateCharacterReferences(r.Context(), projID) }()
+			go func() { defer wg.Done(); segCount, _ = agents.GenerateVisualTimeline(r.Context(), projID) }()
+			go func() { defer wg.Done(); _, _, _ = agents.GenerateProjectAudioAndSubtitles(r.Context(), projID) }()
+			go func() { defer wg.Done(); _, _ = agents.GenerateProjectVideoPackaging(r.Context(), projID) }()
+			wg.Wait()
 			writeJSON(w, 200, map[string]any{
 				"ok":           true,
 				"projectId":    projID,
@@ -978,9 +986,13 @@ func RegisterRoutes(mux *http.ServeMux) {
 				writeJSON(w, 422, map[string]string{"error": err.Error()})
 				return
 			}
-			// Keep <=7s Visual Timeline and YouTube chapter description automatically synchronized
-			segCount, _ := agents.GenerateVisualTimeline(ctx, projectID)
-			_, _ = agents.GenerateProjectVideoPackaging(ctx, projectID)
+			// Keep <=7s Visual Timeline and YouTube chapter description automatically synchronized in parallel
+			var segCount int
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); segCount, _ = agents.GenerateVisualTimeline(ctx, projectID) }()
+			go func() { defer wg.Done(); _, _ = agents.GenerateProjectVideoPackaging(ctx, projectID) }()
+			wg.Wait()
 			var genMetaStr string
 			_ = db.DB.QueryRowContext(ctx, `SELECT COALESCE(generation_meta_json, '{}') FROM documentary_scripts WHERE id = $1`, scrID).Scan(&genMetaStr)
 			var genMeta map[string]any
@@ -1833,22 +1845,22 @@ func getPersonResearchDossier(ctx interface {
 	}, nil
 }
 
-func approveDiscoveryForDocumentary(ctx interface {
+func ensureDocumentaryProjectShell(ctx interface {
 	Deadline() (time.Time, bool)
 	Done() <-chan struct{}
 	Err() error
 	Value(key any) any
-}, discID string) (string, error) {
+}, discID string) (string, bool, error) {
 	var existingID string
 	err := db.DB.QueryRowContext(ctx, `SELECT id FROM documentary_projects WHERE discovery_id = $1 LIMIT 1`, discID).Scan(&existingID)
 	if err == nil && existingID != "" {
-		return existingID, nil
+		return existingID, false, nil
 	}
 
 	var personID, headline string
 	err = db.DB.QueryRowContext(ctx, `SELECT person_id, headline FROM discoveries WHERE id = $1`, discID).Scan(&personID, &headline)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	var personName string
 	_ = db.DB.QueryRowContext(ctx, `SELECT canonical_name FROM people WHERE id = $1`, personID).Scan(&personName)
@@ -1878,19 +1890,37 @@ func approveDiscoveryForDocumentary(ctx interface {
 		string(ytTitles),
 		fmt.Sprintf("Full 20-minute source-grounded investigative biographical documentary on %s (<=7s visual cut pace).", personName))
 	if err != nil {
-		return "", err
+		return "", false, err
+	}
+	return projID, true, nil
+}
+
+func approveDiscoveryForDocumentary(ctx interface {
+	Deadline() (time.Time, bool)
+	Done() <-chan struct{}
+	Err() error
+	Value(key any) any
+}, discID string) (string, error) {
+	projID, created, err := ensureDocumentaryProjectShell(ctx, discID)
+	if err != nil || !created {
+		return projID, err
 	}
 
 	bgCtx := context.Background()
 	if _, errScr := agents.GenerateDocumentaryScript(bgCtx, projID, 20, "Investigative Archival Documentary"); errScr != nil {
-		// Roll back empty project shell if live Gemini AI failed (no fallback)
+		// Roll back empty project shell if live AI failed (no fallback)
 		_, _ = db.DB.ExecContext(ctx, `DELETE FROM documentary_projects WHERE id = $1`, projID)
 		return "", errScr
 	}
-	_, _ = agents.GenerateCharacterReferences(bgCtx, projID)
-	_, _ = agents.GenerateVisualTimeline(bgCtx, projID)
-	_, _, _ = agents.GenerateProjectAudioAndSubtitles(bgCtx, projID)
-	if _, errSEO := agents.GenerateProjectVideoPackaging(bgCtx, projID); errSEO != nil {
+	var errSEO error
+	var wg sync.WaitGroup
+	wg.Add(4)
+	go func() { defer wg.Done(); _, _ = agents.GenerateCharacterReferences(bgCtx, projID) }()
+	go func() { defer wg.Done(); _, _ = agents.GenerateVisualTimeline(bgCtx, projID) }()
+	go func() { defer wg.Done(); _, _, _ = agents.GenerateProjectAudioAndSubtitles(bgCtx, projID) }()
+	go func() { defer wg.Done(); _, errSEO = agents.GenerateProjectVideoPackaging(bgCtx, projID) }()
+	wg.Wait()
+	if errSEO != nil {
 		return projID, errSEO
 	}
 

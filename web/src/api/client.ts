@@ -230,9 +230,16 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {},
   const isLongOp =
     cleanPath.includes('/scan') ||
     cleanPath.includes('/generate') ||
+    cleanPath.includes('/regenerate') ||
+    cleanPath.includes('/reprocess-script') ||
+    cleanPath.includes('/approve') ||
+    cleanPath.includes('/research/person/') ||
+    cleanPath.includes('/youtube/refresh') ||
+    cleanPath.includes('/test-ai') ||
     cleanPath.includes('/assemble-video') ||
-    cleanPath.includes('/export');
-  const timeoutMs = isLongOp ? 55000 : 18000;
+    cleanPath.includes('/export') ||
+    cleanPath.includes('/retry');
+  const timeoutMs = isLongOp ? 90000 : 20000;
 
   try {
     const resp = await fetchWithTimeout(url, { ...options, headers }, timeoutMs);

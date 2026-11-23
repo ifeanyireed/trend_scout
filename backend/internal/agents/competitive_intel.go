@@ -153,8 +153,34 @@ func loadSubjectContextForBrief(ctx context.Context, personID, discoveryID strin
 	return sc
 }
 
+// LoadFreshCompetitiveBrief returns an existing AI-generated Stage 0 brief for projectID if it was
+// generated within maxAge, avoiding redundant YouTube transcription + AI calls during rapid re-runs.
+func LoadFreshCompetitiveBrief(ctx context.Context, projectID string, maxAge time.Duration) (*CompetitivePositioningBrief, string) {
+	if projectID == "" || db.DB == nil {
+		return nil, ""
+	}
+	var raw string
+	if err := db.DB.QueryRowContext(ctx, `SELECT COALESCE(competitive_brief_json, '') FROM documentary_projects WHERE id = $1`, projectID).Scan(&raw); err != nil {
+		return nil, ""
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" {
+		return nil, ""
+	}
+	var brief CompetitivePositioningBrief
+	if err := json.Unmarshal([]byte(raw), &brief); err != nil || !brief.UsedGemini || brief.OutperformanceStrategy == "" {
+		return nil, ""
+	}
+	if ts, err := time.Parse(time.RFC3339, brief.GeneratedAt); err == nil {
+		if time.Since(ts) <= maxAge {
+			return &brief, FormatCompetitiveBriefForPrompt(&brief)
+		}
+	}
+	return nil, ""
+}
+
 // BuildProjectCompetitiveBrief runs Stage 0 pre-script YouTube competitor study (transcribing top videos,
-// mining top viewer comments, and synthesizing positioning via Gemini AI). No local fallback: returns an error if AI is unavailable or fails.
+// mining top viewer comments, and synthesizing positioning via AI). No local fallback: returns an error if AI is unavailable or fails.
 func BuildProjectCompetitiveBrief(
 	ctx context.Context,
 	projectID string,
@@ -165,7 +191,7 @@ func BuildProjectCompetitiveBrief(
 	targetDurationMinutes int,
 ) (*CompetitivePositioningBrief, string, error) {
 	if !ai.HasGeminiKey(ctx) {
-		return nil, "", fmt.Errorf("Gemini AI required for Stage 0 Competitor Study: no Gemini API key configured in Settings")
+		return nil, "", fmt.Errorf("AI required for Stage 0 Competitor Study: no AI API key configured in Settings")
 	}
 	if targetDurationMinutes < 15 || targetDurationMinutes > 25 {
 		targetDurationMinutes = 20
@@ -243,7 +269,7 @@ func BuildProjectCompetitiveBrief(
 	aiBrief, errAI := ai.AnalyzeCompetitorsForPositioningWithGemini(aiCtx, personName, domain.Label, subjectSummary, studiesJSON, targetDurationMinutes)
 	cancelAI()
 	if errAI != nil || aiBrief == nil {
-		return nil, "", fmt.Errorf("Gemini AI Stage 0 Competitor Study failed: %s", sanitizeAIErrorForUI(errAI))
+		return nil, "", fmt.Errorf("%s AI Stage 0 Competitor Study failed: %s", ai.ActiveProviderLabel(ctx), sanitizeAIErrorForUI(errAI))
 	}
 
 	brief := CompetitivePositioningBrief{
@@ -302,7 +328,7 @@ func BuildProjectCompetitiveBrief(
 // GenerateProjectCompetitiveBrief triggers Stage 0 on demand for an existing documentary project.
 func GenerateProjectCompetitiveBrief(ctx context.Context, projectID string) (*CompetitivePositioningBrief, error) {
 	if !ai.HasGeminiKey(ctx) {
-		return nil, fmt.Errorf("Gemini AI required for Stage 0 Competitor Study: no Gemini API key configured in Settings")
+		return nil, fmt.Errorf("AI required for Stage 0 Competitor Study: no AI API key configured in Settings")
 	}
 	var personID, discoveryID string
 	var targetDur int
