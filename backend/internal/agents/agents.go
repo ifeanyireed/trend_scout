@@ -425,7 +425,7 @@ func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCyc
 
 			var existingID string
 			if errCheck := db.DB.QueryRowContext(ctx, `SELECT id FROM discoveries WHERE person_id = $1 LIMIT 1`, personID).Scan(&existingID); errCheck == nil && existingID != "" {
-				_, _ = db.DB.ExecContext(ctx, `UPDATE discoveries SET independent_coverage_count = independent_coverage_count + 1, updated_at = NOW() WHERE id = $1`, existingID)
+				_, _ = db.DB.ExecContext(ctx, `UPDATE discoveries SET independent_coverage_count = independent_coverage_count + 1, updated_at = NOW() WHERE id = $1 AND status = 'active'`, existingID)
 				persistMu.Lock()
 				result.UpdatedExisting++
 				persistMu.Unlock()

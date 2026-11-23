@@ -332,17 +332,17 @@ func RegisterRoutes(mux *http.ServeMux) {
 		}
 
 		metrics := map[string]any{
-			"totalPeople":             countQuery(`SELECT COUNT(*) FROM people`),
+			"totalPeople":             countQuery(`SELECT COUNT(DISTINCT p.id) FROM people p LEFT JOIN discoveries d ON d.person_id = p.id WHERE COALESCE(d.status, 'active') = 'active'`),
 			"newDiscoveries":          countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active'`),
 			"archivedDiscoveries":     countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'archived'`),
 			"emergingStories":         countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active' AND trend_stage IN ('Early Whisper', 'Emerging')`),
 			"acceleratingStories":     countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active' AND trend_stage = 'Accelerating'`),
 			"majorViralOpportunities": countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active' AND trend_stage = 'Major Viral Opportunity'`),
-			"strongUnderdogs":         countQuery(`SELECT COUNT(*) FROM people WHERE underdog_classification IN ('Strong underdog', 'Comeback story', 'Unexpected champion')`),
+			"strongUnderdogs":         countQuery(`SELECT COUNT(DISTINCT p.id) FROM people p JOIN discoveries d ON d.person_id = p.id WHERE d.status = 'active' AND p.underdog_classification IN ('Strong underdog', 'Comeback story', 'Unexpected champion')`),
 			"storiesAwaitingResearch": countQuery(`SELECT COUNT(*) FROM discoveries WHERE status = 'active' AND research_status = 'pending'`),
-			"scriptsGenerated":        countQuery(`SELECT COUNT(*) FROM documentary_scripts`),
-			"projectsInProduction":    countQuery(`SELECT COUNT(*) FROM documentary_projects WHERE status != 'completed'`),
-			"completedPackages":       countQuery(`SELECT COUNT(*) FROM production_exports WHERE export_type = 'package_zip'`),
+			"scriptsGenerated":        countQuery(`SELECT COUNT(*) FROM documentary_scripts ds JOIN documentary_projects dp ON dp.id = ds.project_id LEFT JOIN discoveries d ON d.id = dp.discovery_id WHERE COALESCE(d.status, 'active') != 'archived'`),
+			"projectsInProduction":    countQuery(`SELECT COUNT(*) FROM documentary_projects dp LEFT JOIN discoveries d ON d.id = dp.discovery_id WHERE dp.status != 'completed' AND COALESCE(d.status, 'active') != 'archived'`),
+			"completedPackages":       countQuery(`SELECT COUNT(*) FROM production_exports pe JOIN documentary_projects dp ON dp.id = pe.project_id LEFT JOIN discoveries d ON d.id = dp.discovery_id WHERE pe.export_type = 'package_zip' AND COALESCE(d.status, 'active') != 'archived'`),
 		}
 
 		var lastScan string
@@ -369,8 +369,11 @@ func RegisterRoutes(mux *http.ServeMux) {
 		}
 
 		nRows, _ := db.DB.QueryContext(ctx, `
-			SELECT id, type, severity, title, message, action_url, is_read, created_at::text
-			FROM notifications ORDER BY created_at DESC LIMIT 8
+			SELECT n.id, n.type, n.severity, n.title, n.message, n.action_url, n.is_read, n.created_at::text
+			FROM notifications n
+			LEFT JOIN discoveries d ON d.id = n.discovery_id
+			WHERE COALESCE(d.status, 'active') != 'archived'
+			ORDER BY n.created_at DESC LIMIT 8
 		`)
 		var notifs []map[string]any
 		if nRows != nil {
@@ -409,7 +412,11 @@ func RegisterRoutes(mux *http.ServeMux) {
 
 		var totalDisc, urgentAlerts int
 		_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM discoveries WHERE status = 'active'`).Scan(&totalDisc)
-		_ = db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE is_read = FALSE`).Scan(&urgentAlerts)
+		_ = db.DB.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM notifications n
+			LEFT JOIN discoveries d ON d.id = n.discovery_id
+			WHERE n.is_read = FALSE AND COALESCE(d.status, 'active') != 'archived'
+		`).Scan(&urgentAlerts)
 
 		discoveries := queryDiscoveriesList(ctx, "", "", 0, "active")
 		if len(discoveries) > 5 {
@@ -417,8 +424,11 @@ func RegisterRoutes(mux *http.ServeMux) {
 		}
 
 		nRows, _ := db.DB.QueryContext(ctx, `
-			SELECT id, type, severity, title, message, action_url, is_read, created_at::text
-			FROM notifications WHERE is_read = FALSE ORDER BY created_at DESC LIMIT 5
+			SELECT n.id, n.type, n.severity, n.title, n.message, n.action_url, n.is_read, n.created_at::text
+			FROM notifications n
+			LEFT JOIN discoveries d ON d.id = n.discovery_id
+			WHERE n.is_read = FALSE AND COALESCE(d.status, 'active') != 'archived'
+			ORDER BY n.created_at DESC LIMIT 5
 		`)
 		var unread []map[string]any
 		if nRows != nil {
@@ -759,6 +769,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 				JOIN people p ON p.id = w.person_id
 				JOIN discoveries d ON d.id = w.discovery_id
 				LEFT JOIN opportunity_scores os ON os.discovery_id = d.id
+				WHERE d.status = 'active'
 				ORDER BY w.created_at DESC
 			`)
 			var list []map[string]any
@@ -826,6 +837,8 @@ func RegisterRoutes(mux *http.ServeMux) {
 			SELECT rs.id, rs.person_id, p.canonical_name, rs.url, rs.title, rs.publisher, COALESCE(rs.published_at, ''), rs.source_type, rs.reliability_score, COALESCE(rs.raw_excerpt, '')
 			FROM research_sources rs
 			JOIN people p ON p.id = rs.person_id
+			WHERE NOT EXISTS (SELECT 1 FROM discoveries d WHERE d.person_id = p.id AND d.status = 'archived')
+			   OR EXISTS (SELECT 1 FROM discoveries d WHERE d.person_id = p.id AND d.status = 'active')
 			ORDER BY rs.created_at DESC
 		`)
 		var sources []map[string]any
@@ -848,6 +861,8 @@ func RegisterRoutes(mux *http.ServeMux) {
 			FROM research_claims rc
 			JOIN people p ON p.id = rc.person_id
 			LEFT JOIN research_sources rs ON rs.id = rc.source_id
+			WHERE NOT EXISTS (SELECT 1 FROM discoveries d WHERE d.person_id = p.id AND d.status = 'archived')
+			   OR EXISTS (SELECT 1 FROM discoveries d WHERE d.person_id = p.id AND d.status = 'active')
 			ORDER BY rc.created_at DESC
 		`)
 		var claims []map[string]any
@@ -930,6 +945,8 @@ func RegisterRoutes(mux *http.ServeMux) {
 				       (SELECT COUNT(*) FROM production_exports WHERE project_id = dp.id)
 				FROM documentary_projects dp
 				JOIN people p ON p.id = dp.person_id
+				LEFT JOIN discoveries d ON d.id = dp.discovery_id
+				WHERE COALESCE(d.status, 'active') != 'archived'
 				ORDER BY dp.updated_at DESC
 			`)
 			var projects []map[string]any
@@ -1304,8 +1321,11 @@ func RegisterRoutes(mux *http.ServeMux) {
 	// 7. NOTIFICATIONS, REPORTS, SETTINGS & SYSTEM HEALTH
 	mux.HandleFunc("/api/notifications", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		rows, _ := db.DB.QueryContext(r.Context(), `
-			SELECT id, COALESCE(discovery_id, ''), COALESCE(project_id, ''), type, severity, title, message, action_url, is_read, COALESCE(emailed_at::text, ''), created_at::text
-			FROM notifications ORDER BY created_at DESC LIMIT 50
+			SELECT n.id, COALESCE(n.discovery_id, ''), COALESCE(n.project_id, ''), n.type, n.severity, n.title, n.message, n.action_url, n.is_read, COALESCE(n.emailed_at::text, ''), n.created_at::text
+			FROM notifications n
+			LEFT JOIN discoveries d ON d.id = n.discovery_id
+			WHERE COALESCE(d.status, 'active') != 'archived'
+			ORDER BY n.created_at DESC LIMIT 50
 		`)
 		var list []map[string]any
 		if rows != nil {

@@ -203,6 +203,7 @@ export const DashboardPage: React.FC = () => {
     try {
       await apiFetch(`/api/discoveries/${discoveryId}/archive`, { method: 'POST', body: '{}' });
       load();
+      window.dispatchEvent(new CustomEvent('ts-refresh'));
     } catch (err) {
       console.error(err);
     }
@@ -494,18 +495,19 @@ export const DashboardPage: React.FC = () => {
 };
 
 // 3–6. DISCOVER / TRENDING NOW / EMERGING STORIES / UNDERDOG OPPORTUNITIES
-export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emerging' | 'underdogs' }> = ({ mode }) => {
+export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emerging' | 'underdogs' | 'archived' }> = ({ mode }) => {
   const navigate = useNavigate();
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState('');
-  const [statusTab, setStatusTab] = useState<'active' | 'archived'>('active');
   const [activeCount, setActiveCount] = useState(0);
   const [archivedCount, setArchivedCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+
+  const isArchivedView = mode === 'archived';
 
   const titles: Record<string, { title: string; subtitle: string }> = {
     discover: {
@@ -524,19 +526,26 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
       title: 'Ranked Underdog Documentary Opportunities',
       subtitle: 'Scored across 8 transparent dimensions: Underdog Strength, Transformation, Momentum, Evidence Confidence & Saturation Risk.',
     },
+    archived: {
+      title: 'Archived Opportunities',
+      subtitle: 'Archived stories are hidden from Master Overview, Discovery Feeds, Watchlist, Research Library, Documentaries, Reports & Alerts. Restore any item here to make it active again.',
+    },
   };
 
   const load = () => {
     setError(null);
-    apiFetch(`/api/discoveries?status=${statusTab}`)
+    const queryStatus = isArchivedView ? 'archived' : 'active';
+    apiFetch(`/api/discoveries?status=${queryStatus}`)
       .then((res) => {
         let list = Array.isArray(res?.discoveries) ? res.discoveries : [];
         setActiveCount(Number(res?.activeCount ?? 0));
         setArchivedCount(Number(res?.archivedCount ?? 0));
-        if (mode === 'trending') {
-          list = list.filter((d: any) => d.trendStage === 'Major Viral Opportunity' || d.trendStage === 'Accelerating');
-        } else if (mode === 'emerging') {
-          list = list.filter((d: any) => d.trendStage === 'Emerging' || d.trendStage === 'Early Whisper');
+        if (!isArchivedView) {
+          if (mode === 'trending') {
+            list = list.filter((d: any) => d.trendStage === 'Major Viral Opportunity' || d.trendStage === 'Accelerating');
+          } else if (mode === 'emerging') {
+            list = list.filter((d: any) => d.trendStage === 'Emerging' || d.trendStage === 'Early Whisper');
+          }
         }
         setItems(list);
       })
@@ -553,7 +562,7 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
     load();
     window.addEventListener('ts-refresh', load);
     return () => window.removeEventListener('ts-refresh', load);
-  }, [mode, statusTab]);
+  }, [mode]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -588,6 +597,7 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
     try {
       await apiFetch(`/api/discoveries/${d.id}/${action}`, { method: 'POST', body: '{}' });
       load();
+      window.dispatchEvent(new CustomEvent('ts-refresh'));
     } catch (err) {
       console.error(err);
     }
@@ -614,31 +624,24 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
           <p className="text-xs text-nexa-text-secondary mt-1">{titles[mode].subtitle}</p>
         </div>
         <div className="flex items-center gap-2.5 flex-wrap">
-          <div className="inline-flex items-center p-1 rounded-full bg-nexa-bg-surface border border-nexa-border">
+          {isArchivedView ? (
             <button
               type="button"
-              onClick={() => setStatusTab('active')}
-              className={`px-3.5 py-1.5 rounded-full text-xs font-extrabold transition cursor-pointer ${
-                statusTab === 'active'
-                  ? 'bg-nexa-brand text-white shadow-sm'
-                  : 'text-nexa-text-secondary hover:text-nexa-text-primary'
-              }`}
+              onClick={() => navigate('/discover')}
+              className="px-3.5 py-2 rounded-full border border-nexa-border bg-nexa-bg-surface hover:border-nexa-brand text-xs font-extrabold text-nexa-text-primary transition cursor-pointer"
             >
-              Active ({activeCount})
+              Active Feed ({activeCount})
             </button>
+          ) : (
             <button
               type="button"
-              onClick={() => setStatusTab('archived')}
-              className={`px-3.5 py-1.5 rounded-full text-xs font-extrabold transition cursor-pointer flex items-center gap-1.5 ${
-                statusTab === 'archived'
-                  ? 'bg-nexa-brand text-white shadow-sm'
-                  : 'text-nexa-text-secondary hover:text-nexa-text-primary'
-              }`}
+              onClick={() => navigate('/archived')}
+              className="px-3.5 py-2 rounded-full border border-nexa-border bg-nexa-bg-surface hover:border-nexa-brand text-xs font-extrabold text-nexa-text-secondary hover:text-nexa-text-primary transition cursor-pointer flex items-center gap-1.5"
             >
               <Archive className="w-3.5 h-3.5" />
               Archived ({archivedCount})
             </button>
-          </div>
+          )}
           <div className="flex items-center bg-nexa-bg-surface px-3.5 py-2 rounded-full border border-nexa-border gap-2 w-60">
             <Search className="w-4 h-4 text-nexa-text-muted shrink-0" />
             <input
@@ -682,21 +685,36 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
         </div>
       ) : filtered.length === 0 ? (
         <div className="nexa-card rounded-3xl p-10 text-center space-y-3">
-          <Compass className="w-7 h-7 text-nexa-brand mx-auto" />
+          {isArchivedView ? (
+            <Archive className="w-7 h-7 text-nexa-text-muted mx-auto" />
+          ) : (
+            <Compass className="w-7 h-7 text-nexa-brand mx-auto" />
+          )}
           <div className="text-base font-black text-display text-nexa-text-primary">
-            No Matching Opportunities Found
+            {isArchivedView ? 'No Archived Opportunities' : 'No Matching Opportunities Found'}
           </div>
           <p className="text-xs text-nexa-text-secondary max-w-md mx-auto">
             {search || stageFilter
               ? 'Try clearing your search or trend stage filter.'
+              : isArchivedView
+              ? 'Any opportunity you archive will appear here and stay hidden from all active feeds, overview, watchlist, research library, documentaries, reports, and alerts.'
               : 'Trigger a live scan to discover fresh multi-domain stories across Science, Business, Arts, Tech, Humanitarian, and Sports.'}
           </p>
-          <button
-            onClick={() => window.dispatchEvent(new CustomEvent('ts-trigger-scan'))}
-            className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold shadow-md shadow-nexa-brand/25 cursor-pointer"
-          >
-            Run Live Discovery Scan Now →
-          </button>
+          {isArchivedView ? (
+            <button
+              onClick={() => navigate('/discover')}
+              className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold shadow-md shadow-nexa-brand/25 cursor-pointer"
+            >
+              Browse Active Discoveries →
+            </button>
+          ) : (
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent('ts-trigger-scan'))}
+              className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold shadow-md shadow-nexa-brand/25 cursor-pointer"
+            >
+              Run Live Discovery Scan Now →
+            </button>
+          )}
         </div>
       ) : (
       <div className="space-y-4">
@@ -766,12 +784,14 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
                       </>
                     )}
                   </button>
-                  <button
-                    onClick={(e) => handleAddWatchlist(e, d)}
-                    className="px-3.5 py-2 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-bold flex items-center gap-1.5 text-nexa-text-secondary hover:text-nexa-brand cursor-pointer"
-                  >
-                    <Bookmark className="w-3.5 h-3.5" /> Watch
-                  </button>
+                  {d.status !== 'archived' && (
+                    <button
+                      onClick={(e) => handleAddWatchlist(e, d)}
+                      className="px-3.5 py-2 rounded-full border border-nexa-border hover:border-nexa-brand text-xs font-bold flex items-center gap-1.5 text-nexa-text-secondary hover:text-nexa-brand cursor-pointer"
+                    >
+                      <Bookmark className="w-3.5 h-3.5" /> Watch
+                    </button>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1037,6 +1057,11 @@ export const OpportunityDetailPage: React.FC = () => {
     try {
       const action = detail.status === 'archived' ? 'restore' : 'archive';
       await apiFetch(`/api/discoveries/${detail.id}/${action}`, { method: 'POST', body: '{}' });
+      window.dispatchEvent(new CustomEvent('ts-refresh'));
+      if (action === 'archive') {
+        navigate('/archived');
+        return;
+      }
       load();
     } finally {
       setBusy(false);

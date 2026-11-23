@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Compass, Flame, Sparkles, Trophy, Bookmark, BookOpen, Film, Clapperboard,
+  Archive, Compass, Flame, Sparkles, Trophy, Bookmark, BookOpen, Film, Clapperboard,
   Bell, FileSpreadsheet, Settings, Activity, LayoutDashboard, LogOut, RefreshCw,
   ChevronLeft, ChevronRight, Search, X, Sun, Moon, ShieldCheck
 } from 'lucide-react';
@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { to: '/trending', label: 'Trending Now', short: 'Trending', icon: Flame, badge: 'VPH', section: 'Intelligence & Hub' },
   { to: '/emerging', label: 'Emerging Stories', short: 'Emerging', icon: Sparkles, badge: 'Early', section: 'Intelligence & Hub' },
   { to: '/underdogs', label: 'Underdog Opportunities', short: 'Underdogs', icon: Trophy, badge: 'Ranked', section: 'Intelligence & Hub' },
+  { to: '/archived', label: 'Archived', short: 'Archived', icon: Archive, badge: 'Vault', section: 'Intelligence & Hub' },
 
   { to: '/research', label: 'Research Library', short: 'Research', icon: BookOpen, badge: 'Verified', section: 'Biographical Dossier' },
   { to: '/watchlist', label: 'Watchlist Pipeline', short: 'Watchlist', icon: Bookmark, badge: 'Alerts', section: 'Biographical Dossier' },

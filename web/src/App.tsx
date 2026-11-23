@@ -94,6 +94,7 @@ export const App: React.FC = () => {
                   <Route path="/trending" element={<DiscoveryFeedPage mode="trending" />} />
                   <Route path="/emerging" element={<DiscoveryFeedPage mode="emerging" />} />
                   <Route path="/underdogs" element={<DiscoveryFeedPage mode="underdogs" />} />
+                  <Route path="/archived" element={<DiscoveryFeedPage mode="archived" />} />
                   <Route path="/opportunities/:id" element={<OpportunityDetailPage />} />
                   <Route path="/watchlist" element={<WatchlistPage />} />
                   <Route path="/research" element={<ResearchLibraryPage />} />
