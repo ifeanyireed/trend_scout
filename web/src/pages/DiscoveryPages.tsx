@@ -1399,36 +1399,6 @@ export const OpportunityDetailPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Verified Official Accounts Registry Strip */}
-        {verifiedAccounts.length > 0 && (
-          <div className="p-3.5 rounded-2xl bg-emerald-500/5 border border-emerald-500/25 space-y-2">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="text-[11px] font-extrabold text-emerald-500 uppercase flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                Verified Official Accounts ({verifiedAccounts.length} Authentic Entities — Fan Pages &amp; Impersonators Filtered)
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-              {verifiedAccounts.map((acc: any, idx: number) => (
-                <div key={idx} className="p-2.5 rounded-xl bg-nexa-bg-base border border-nexa-border text-[11px] space-y-1">
-                  <div className="flex items-center justify-between gap-1.5">
-                    <span className="font-extrabold text-nexa-text-primary truncate">{acc.entityName}</span>
-                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-500 text-[9px] font-extrabold uppercase shrink-0">
-                      {acc.relationRole || (acc.entityType === 'subject' ? 'Legend' : acc.entityType)}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 text-[10px]">
-                    {acc.youtubeHandle && <span className="px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-500 font-bold">YT: {acc.youtubeHandle}</span>}
-                    {acc.twitterHandle && <span className="px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-500 font-bold">X: {acc.twitterHandle}</span>}
-                    {acc.instagramHandle && <span className="px-2 py-0.5 rounded-full bg-fuchsia-500/10 text-fuchsia-500 font-bold">IG: {acc.instagramHandle}</span>}
-                  </div>
-                  <div className="text-[9px] text-nexa-text-muted truncate">{acc.verifiedBy}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* 3 Separate Platform Tabs */}
         <div className="flex flex-wrap items-center gap-2 border-b border-nexa-border pb-3">
           {[
@@ -1882,6 +1852,71 @@ export const OpportunityDetailPage: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {/* Verified Official Accounts (Separate White Card at Bottom) */}
+      {verifiedAccounts.length > 0 && (
+        <div className="bg-white text-slate-900 rounded-3xl p-6 border border-slate-200 shadow-sm space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-black text-display text-slate-900 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                Verified Official Accounts ({verifiedAccounts.length})
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Authentic official handles verified via Wikipedia, Wikidata Official Registry &amp; YouTube Official Channel API — fan pages and impersonators filtered out.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {verifiedAccounts.map((acc: any, idx: number) => (
+              <div
+                key={idx}
+                className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs text-xs space-y-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-extrabold text-slate-900 truncate">{acc.entityName}</span>
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-extrabold uppercase shrink-0">
+                    {acc.relationRole || (acc.entityType === 'subject' ? 'Legend' : acc.entityType)}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 text-[11px]">
+                  {acc.youtubeHandle && (
+                    <a
+                      href={`https://www.youtube.com/${acc.youtubeHandle}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 font-bold hover:underline"
+                    >
+                      YT: {acc.youtubeHandle}
+                    </a>
+                  )}
+                  {acc.twitterHandle && (
+                    <a
+                      href={`https://x.com/${String(acc.twitterHandle).replace(/^@/, '')}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-2.5 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 font-bold hover:underline"
+                    >
+                      X: {acc.twitterHandle}
+                    </a>
+                  )}
+                  {acc.instagramHandle && (
+                    <a
+                      href={`https://instagram.com/${String(acc.instagramHandle).replace(/^@/, '')}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-2.5 py-0.5 rounded-full bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200 font-bold hover:underline"
+                    >
+                      IG: {acc.instagramHandle}
+                    </a>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-500 truncate">{acc.verifiedBy}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
