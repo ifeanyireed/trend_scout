@@ -870,7 +870,7 @@ export const OpportunityDetailPage: React.FC = () => {
       const res = await apiFetch(`/api/discoveries/${detail.id}/approve`, { method: 'POST', body: '{}' });
       navigate(`/production/${res.projectId}`);
     } catch (err: any) {
-      setAiActionError(err?.message || 'Gemini AI documentary generation failed');
+      setAiActionError(err?.message || 'AI documentary generation failed');
     } finally {
       setBusy(false);
     }
@@ -894,7 +894,7 @@ export const OpportunityDetailPage: React.FC = () => {
         load();
       }
     } catch (err: any) {
-      setAiActionError(err?.message || 'Gemini AI script reprocessing failed');
+      setAiActionError(err?.message || 'AI script reprocessing failed');
     } finally {
       setReprocessing(false);
     }
@@ -913,7 +913,7 @@ export const OpportunityDetailPage: React.FC = () => {
       setHashtagsInput(Array.isArray(res.videoHashtags) ? res.videoHashtags.join(' ') : '');
       load();
     } catch (err: any) {
-      setAiActionError(err?.message || 'Gemini AI YouTube SEO packaging failed');
+      setAiActionError(err?.message || 'AI YouTube SEO packaging failed');
     } finally {
       setSeoBusy(false);
     }

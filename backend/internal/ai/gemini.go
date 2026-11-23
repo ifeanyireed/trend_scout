@@ -104,10 +104,9 @@ func detectProviderKind(cfg AIConfig) (kind string, label string, baseURL string
 	switch {
 	case strings.HasPrefix(key, "gsk_") || strings.Contains(provLow, "groq"):
 		return "groq", "Groq", "https://api.groq.com/openai/v1/chat/completions", []string{
-			"llama-3.3-70b-versatile",
+			"qwen/qwen3.8-27b",
 			"openai/gpt-oss-120b",
 			"openai/gpt-oss-20b",
-			"llama-3.1-8b-instant",
 		}
 	case strings.HasPrefix(key, "sk-or-") || strings.Contains(provLow, "openrouter"):
 		return "openrouter", "OpenRouter", "https://openrouter.ai/api/v1/chat/completions", []string{
@@ -257,7 +256,7 @@ func isGroqChatModel(id string) bool {
 	if low == "" {
 		return false
 	}
-	exclude := []string{"whisper", "tts", "orpheus", "playai", "guard", "safeguard", "embed", "rerank", "moderation", "vision-preview", "distil-whisper"}
+	exclude := []string{"whisper", "tts", "orpheus", "playai", "guard", "safeguard", "embed", "rerank", "moderation", "vision-preview", "distil-whisper", "allam"}
 	for _, ex := range exclude {
 		if strings.Contains(low, ex) {
 			return false
@@ -269,16 +268,16 @@ func isGroqChatModel(id string) bool {
 func rankGroqModel(id string) int {
 	low := strings.ToLower(id)
 	switch {
-	case low == "llama-3.3-70b-versatile":
+	case strings.Contains(low, "qwen3.8") || strings.Contains(low, "qwen/qwen3"):
 		return 100
 	case low == "openai/gpt-oss-120b":
-		return 95
-	case strings.Contains(low, "qwen") && !strings.Contains(low, "guard"):
-		return 90
+		return 96
+	case low == "llama-3.3-70b-versatile":
+		return 94
+	case low == "openai/gpt-oss-20b":
+		return 88
 	case strings.Contains(low, "70b") || strings.Contains(low, "120b"):
 		return 85
-	case low == "openai/gpt-oss-20b":
-		return 80
 	case strings.Contains(low, "llama-4"):
 		return 78
 	case low == "llama-3.1-8b-instant":
@@ -460,11 +459,12 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 		Type string `json:"type"`
 	}
 	type oaReq struct {
-		Model          string     `json:"model"`
-		Messages       []oaMsg    `json:"messages"`
-		Temperature    float64    `json:"temperature,omitempty"`
-		MaxTokens      int        `json:"max_tokens,omitempty"`
-		ResponseFormat *oaRespFmt `json:"response_format,omitempty"`
+		Model           string     `json:"model"`
+		Messages        []oaMsg    `json:"messages"`
+		Temperature     float64    `json:"temperature,omitempty"`
+		MaxTokens       int        `json:"max_tokens,omitempty"`
+		ReasoningEffort string     `json:"reasoning_effort,omitempty"`
+		ResponseFormat  *oaRespFmt `json:"response_format,omitempty"`
 	}
 	type oaResp struct {
 		Choices []struct {
@@ -483,6 +483,15 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 	var triedErrs []string
 	for _, model := range modelsToTry {
 		useJSONFormat := kind == "groq" || kind == "openai"
+		reasoningEffort := ""
+		if kind == "groq" {
+			mLow := strings.ToLower(model)
+			if strings.Contains(mLow, "gpt-oss") {
+				reasoningEffort = "low"
+			} else if strings.Contains(mLow, "qwen3") {
+				reasoningEffort = "none"
+			}
+		}
 
 		// Up to 2 automatic retries on 429 rate-limit bursts or json_validate_failed
 		for attempt := 0; attempt < 3; attempt++ {
@@ -492,8 +501,9 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 					{Role: "system", Content: sysText},
 					{Role: "user", Content: userPrompt},
 				},
-				Temperature: temp,
-				MaxTokens:   maxTokens,
+				Temperature:     temp,
+				MaxTokens:       maxTokens,
+				ReasoningEffort: reasoningEffort,
 			}
 			if useJSONFormat {
 				reqObj.ResponseFormat = &oaRespFmt{Type: "json_object"}
@@ -518,19 +528,21 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 			resp, err := client.Do(req)
 			if err != nil {
 				lastErr = fmt.Errorf("%s request failed: %w", label, err)
+				triedErrs = append(triedErrs, fmt.Sprintf("%s: %v", model, err))
 				break
 			}
 			rawResp, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil {
 				lastErr = fmt.Errorf("%s read failed: %w", label, err)
+				triedErrs = append(triedErrs, fmt.Sprintf("%s: %v", model, err))
 				break
 			}
 
 			if resp.StatusCode == 429 {
-				waitSec := 3 * (attempt + 1)
+				waitSec := 2
 				if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
-					if parsedSec, errP := strconv.Atoi(ra); errP == nil && parsedSec > 0 && parsedSec <= 10 {
+					if parsedSec, errP := strconv.Atoi(ra); errP == nil && parsedSec > 0 && parsedSec <= 4 {
 						waitSec = parsedSec
 					}
 				}
@@ -541,7 +553,8 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 					msg = er.Error.Message
 				}
 				lastErr = fmt.Errorf("%s api error (429): %s", strings.ToLower(label), msg)
-				if attempt < 2 {
+				// Single short retry, then immediately rotate to the next live model bucket (separate TPM limit)
+				if attempt == 0 {
 					select {
 					case <-ctx.Done():
 						return "", lastErr
@@ -549,29 +562,32 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 						continue
 					}
 				}
-				break // try next model bucket if available
+				triedErrs = append(triedErrs, fmt.Sprintf("%s: 429 %s", model, msg))
+				break
 			}
 
 			var parsed oaResp
 			if err := json.Unmarshal(rawResp, &parsed); err != nil {
 				lastErr = fmt.Errorf("decode %s response (%d): %w", label, resp.StatusCode, err)
+				triedErrs = append(triedErrs, fmt.Sprintf("%s: decode %d", model, resp.StatusCode))
 				break
 			}
 			if parsed.Error != nil {
 				errMsgLow := strings.ToLower(parsed.Error.Message)
 				lastErr = fmt.Errorf("%s api error (%d): %s", strings.ToLower(label), resp.StatusCode, parsed.Error.Message)
+				if resp.StatusCode == 400 && reasoningEffort != "" && strings.Contains(errMsgLow, "reasoning_effort") {
+					reasoningEffort = ""
+					continue
+				}
 				if resp.StatusCode == 400 && useJSONFormat && (strings.Contains(errMsgLow, "json") || strings.Contains(errMsgLow, "response_format")) {
 					// Some open-weight models reject strict response_format; retry cleanly relying on prompt JSON + cleanAIJSONResponse
 					useJSONFormat = false
 					continue
 				}
-				if resp.StatusCode == 404 || (resp.StatusCode == 400 && strings.Contains(errMsgLow, "model")) {
-					triedErrs = append(triedErrs, fmt.Sprintf("%s: %s", model, parsed.Error.Message))
-					break // try next live model
-				}
 				if resp.StatusCode == 401 || resp.StatusCode == 403 {
 					return "", lastErr
 				}
+				triedErrs = append(triedErrs, fmt.Sprintf("%s (%d): %s", model, resp.StatusCode, parsed.Error.Message))
 				break
 			}
 			if resp.StatusCode >= 400 {
@@ -579,16 +595,19 @@ func callOpenAICompatibleJSON(ctx context.Context, cfg AIConfig, kind string, la
 				if resp.StatusCode == 401 || resp.StatusCode == 403 {
 					return "", lastErr
 				}
+				triedErrs = append(triedErrs, fmt.Sprintf("%s (%d)", model, resp.StatusCode))
 				break
 			}
 			if len(parsed.Choices) == 0 || strings.TrimSpace(parsed.Choices[0].Message.Content) == "" {
 				lastErr = fmt.Errorf("%s returned empty response", label)
+				triedErrs = append(triedErrs, fmt.Sprintf("%s: empty content", model))
 				break
 			}
 
 			cleaned := cleanAIJSONResponse(parsed.Choices[0].Message.Content)
 			if err := json.Unmarshal([]byte(cleaned), dst); err != nil {
 				lastErr = fmt.Errorf("unmarshal %s json: %w", label, err)
+				triedErrs = append(triedErrs, fmt.Sprintf("%s: invalid json", model))
 				break
 			}
 			return model, nil
@@ -625,16 +644,30 @@ func callGeminiWithConfig(ctx context.Context, cfg AIConfig, systemPrompt string
 			}
 		}
 	}
+	usedLiveGroq := false
 	if kind == "groq" {
 		if live := fetchLiveGroqModels(ctx, cfg.GeminiAPIKey, false); len(live) > 0 {
-			// Cap to top 5 ranked live chat models from the user's actual Groq account
-			if len(live) > 5 {
-				live = live[:5]
+			usedLiveGroq = true
+			// Only keep cfg.Model if it's actually in the live Groq catalog for this account
+			filtered := []string{}
+			for _, m := range modelsToTry {
+				for _, lm := range live {
+					if m == lm {
+						filtered = append(filtered, m)
+						break
+					}
+				}
+			}
+			modelsToTry = filtered
+			if len(live) > 4 {
+				live = live[:4]
 			}
 			appendUnique(live)
 		}
 	}
-	appendUnique(defaultModels)
+	if !usedLiveGroq {
+		appendUnique(defaultModels)
+	}
 
 	if kind == "groq" || kind == "openrouter" || kind == "openai" {
 		return callOpenAICompatibleJSON(ctx, cfg, kind, label, baseURL, modelsToTry, systemPrompt, userPrompt, dst, opts)
@@ -846,7 +879,7 @@ func EvaluateUnderdogWithGemini(
 	redditComments int64,
 ) (*UnderdogEvaluationAI, error) {
 	if !HasGeminiKey(ctx) {
-		return nil, fmt.Errorf("gemini api key not set")
+		return nil, fmt.Errorf("AI API key not set")
 	}
 
 	sysPrompt := `You are TrendScout Studio's Underdog Assessment & Documentary Scoring Agent.
@@ -1014,7 +1047,13 @@ func AnalyzeCompetitorsForPositioningWithGemini(
 	targetDurationMinutes int,
 ) (*CompetitivePositioningBriefAI, error) {
 	if !HasGeminiKey(ctx) {
-		return nil, fmt.Errorf("gemini api key not set")
+		return nil, fmt.Errorf("AI API key not set")
+	}
+	if len(subjectContext) > 1500 {
+		subjectContext = subjectContext[:1500]
+	}
+	if len(competitorDataJSON) > 4200 {
+		competitorDataJSON = competitorDataJSON[:4200]
 	}
 
 	sysPrompt := `You are TrendScout Studio's Lead YouTube Competitive Strategist & Documentary Showrunner.
@@ -1053,10 +1092,14 @@ Return strictly valid JSON matching:
   ]
 }`, personName, biographicalField, targetDurationMinutes, subjectContext, competitorDataJSON, personName, personName, targetDurationMinutes)
 
+	maxOut := 2048
+	if kind, _, _, _ := detectProviderKind(GetAIConfig(ctx)); kind == "groq" {
+		maxOut = 1200
+	}
 	var out CompetitivePositioningBriefAI
 	if err := CallGeminiJSONWithOptions(ctx, sysPrompt, userPrompt, &out, GeminiCallOptions{
 		Temperature:     0.35,
-		MaxOutputTokens: 2048,
+		MaxOutputTokens: maxOut,
 		Timeout:         25 * time.Second,
 	}); err != nil {
 		return nil, err
@@ -1083,7 +1126,7 @@ func GenerateDocumentaryScriptWithGemini(
 	competitiveBriefText string,
 ) (*DocumentaryScriptAI, error) {
 	if !HasGeminiKey(ctx) {
-		return nil, fmt.Errorf("gemini api key not set")
+		return nil, fmt.Errorf("AI API key not set")
 	}
 
 	if targetDurationMinutes < 15 || targetDurationMinutes > 25 {
@@ -1130,6 +1173,30 @@ EDITORIAL RULES:
 6. ` + fieldDirective + `
 7. Style focus: ` + style
 
+	cfg := GetAIConfig(ctx)
+	kind, _, _, _ := detectProviderKind(cfg)
+
+	bioLimit, claimsLimit, briefLimit, outlineMaxTok := 3600, 2200, 1800, 4096
+	if kind == "groq" || kind == "openrouter" {
+		bioLimit, claimsLimit, briefLimit, outlineMaxTok = 2000, 1200, 1000, 1800
+	}
+	bioForOutline := biography
+	if len(bioForOutline) > bioLimit {
+		bioForOutline = bioForOutline[:bioLimit]
+	}
+	claimsForOutline := claimsText
+	if len(claimsForOutline) > claimsLimit {
+		claimsForOutline = claimsForOutline[:claimsLimit]
+	}
+	compBriefForOutline := competitiveBriefText
+	if len(compBriefForOutline) > briefLimit {
+		compBriefForOutline = compBriefForOutline[:briefLimit]
+	}
+	assessForOutline := assessmentSummary
+	if kind == "groq" && len(assessForOutline) > 900 {
+		assessForOutline = assessForOutline[:900]
+	}
+
 	outlineUser := fmt.Sprintf(`Subject: %s
 Known Category: %s
 Country / Origin: %s
@@ -1174,13 +1241,21 @@ Return strictly valid JSON matching:
       "targetShotCount": 14
     }
   ]
-}`, personName, category, country, projectTitle, targetDurationMinutes, totalSeconds, windowSpec.String(), assessmentSummary, competitiveBriefText, biography, claimsText)
+}`, personName, category, country, projectTitle, targetDurationMinutes, totalSeconds, windowSpec.String(), assessForOutline, compBriefForOutline, bioForOutline, claimsForOutline)
 
 	var outline DocumentaryOutlineAI
-	cfg := GetAIConfig(ctx)
-	usedModel, err := callGeminiWithConfig(ctx, cfg, outlineSys, outlineUser, &outline, GeminiCallOptions{
+	outlineCfg := cfg
+	var groqLive []string
+	if kind == "groq" {
+		groqLive = fetchLiveGroqModels(ctx, cfg.GeminiAPIKey, false)
+		// Use second live Groq bucket (e.g. openai/gpt-oss-120b, 8K TPM) for Stage 1 Outline so Stage 0's bucket stays cool
+		if len(groqLive) >= 2 {
+			outlineCfg.Model = groqLive[1]
+		}
+	}
+	usedModel, err := callGeminiWithConfig(ctx, outlineCfg, outlineSys, outlineUser, &outline, GeminiCallOptions{
 		Temperature:     0.4,
-		MaxOutputTokens: 4096,
+		MaxOutputTokens: outlineMaxTok,
 		Timeout:         30 * time.Second,
 	})
 	if err != nil {
@@ -1191,147 +1266,194 @@ Return strictly valid JSON matching:
 	}
 
 	// Normalize chapter windows so all 7 chapters strictly match the target duration budget
-	chaptersOut := make([]DocumentaryChapterAI, len(outline.Chapters))
-	chapterErrs := make([]error, len(outline.Chapters))
-	var wg sync.WaitGroup
-	// Bound concurrency for Groq/OpenRouter free-tier TPM limits while keeping full 7-chapter generation fast
-	maxConc := 4
-	kind, _, _, _ := detectProviderKind(cfg)
-	if kind == "groq" || kind == "openrouter" {
-		maxConc = 2
-	}
-	sem := make(chan struct{}, maxConc)
-	bioForChapter := biography
-	if len(bioForChapter) > 2800 {
-		bioForChapter = bioForChapter[:2800]
-	}
-	claimsForChapter := claimsText
-	if len(claimsForChapter) > 2200 {
-		claimsForChapter = claimsForChapter[:2200]
+	for i := range outline.Chapters {
+		if i < len(windows) {
+			outline.Chapters[i].StartSeconds = windows[i][0]
+			outline.Chapters[i].EndSeconds = windows[i][1]
+		}
 	}
 
-	chapterSys := `You are the Lead Investigative Documentary Screenwriter & Visual Pacing Editor.
+	bioForBatch := biography
+	if len(bioForBatch) > 1500 {
+		bioForBatch = bioForBatch[:1500]
+	}
+	claimsForBatch := claimsText
+	if len(claimsForBatch) > 1000 {
+		claimsForBatch = claimsForBatch[:1000]
+	}
+	compBriefForBatch := competitiveBriefText
+	if len(compBriefForBatch) > 700 {
+		compBriefForBatch = compBriefForBatch[:700]
+	}
+
+	chapterSys := `You are the Lead Underdog Documentary Screenwriter & Visual Pacing Editor.
 You write realigned shot-by-shot documentary scripts where EVERY visual cut is STRICTLY <= 7 seconds (4 to 7 seconds per shot) so the viewer sees a fresh, purposeful image at least every 7 seconds of speech or silence.
 
 MANDATORY STYLE, COMPLEXITY & PACING RULES:
-1. VOICEOVER STYLE: Sparse, declarative, measured, deeply researched journalism. Short, rhythmic sentences (often 8–16 words). Cite specific dates, places, institutions, numbers, and named people from the provided dossier. Explicitly attribute contested claims ("According to reporting...", "Filings allege...", "The subject denied..."). Never editorialize with hype or clichés.
+1. VOICEOVER STYLE: Sparse, declarative, cinematic, deeply researched journalism. Short, rhythmic sentences (8–16 words per shot). Cite specific dates, places, institutions, numbers, and named people from the provided dossier. Explicitly attribute contested claims ("According to reporting...", "Filings allege...", "The subject denied..."). ZERO cookie-cutter openings, ZERO hype clichés.
 2. <= 7 SECOND VISUAL CUT DISCIPLINE:
    - Every single shot MUST have durationSeconds between 4 and 7 (NEVER > 7).
-   - A narrator speaks ~2.4 words per second (~15–17 words max in 7 seconds).
-   - Whenever a sentence or thought runs longer than ~15 words, SPLIT it cleanly across two shots using ellipsis bridges ("...toward the audience..." -> "...and apologized to the families...") with a fresh cutaway shot for the continuation.
-   - Interleave tactile cutaway shots (Macro details, Close-ups of hands/documents/tools/doors/screens, High-angle or Low-angle architectural angles) between primary establishing shots so no image ever holds longer than 7 seconds.
-   - Include 1 to 3 deliberate breathing/atmosphere shots per chapter where narration is "" and audioCue is e.g. "Silence" or "Ambient room sound" (4–7 seconds each) at emotional transitions or chapter endings.
-3. CONCRETE, FILMABLE VISUALS: Every visual description MUST begin with a concrete camera scale ("Wide shot of...", "Medium shot of...", "Close-up of...", "Macro shot of...", "Over-the-shoulder shot of...", "Low-angle shot of...", "High-angle wide shot of...", "Aerial shot of...") describing real physical spaces, lighting, archival documents, instruments, or environments authentic to the subject's biographical field. NEVER write vague abstractions like "visual metaphor of success".
-4. VOLUME: Generate enough shots to completely fill the chapter's exact duration in seconds (sum of durationSeconds ~= endSeconds - startSeconds).
-5. VISIBLE STAGE 0 EXECUTION: Every chapter MUST visibly deliver its assigned "Chapter Competitive Execution Target" in the spoken NARRATOR (V.O.) lines—executing the Cold Open edge in Chapter 0, answering mined audience questions, and exposing the exact verified details competing YouTube clips skip—always in restrained, source-attributed documentary prose.`
+   - Keep each shot's narration <= 16 words (~6–7s spoken). Split longer thoughts across two shots using ellipsis bridges ("...toward the podium..." -> "...while skeptics waited...").
+   - Interleave tactile cutaways (Macro details, Close-ups of hands/documents/tools/screens, High-angle or Low-angle shots) with primary establishing shots.
+   - Include 1–2 atmospheric silence/ambient shots per chapter (narration: "", audioCue: "Silence" or room tone, 4–6s).
+3. CONCRETE, FILMABLE VISUALS: Every visual MUST begin with a concrete camera scale ("Wide shot of...", "Medium shot of...", "Close-up of...", "Macro shot of...", "Over-the-shoulder shot of...", "Low-angle shot of...", "Aerial shot of...") authentic to THIS subject's real world.
+4. VISIBLE STAGE 0 EXECUTION: Every chapter MUST visibly deliver its assigned "strategyExecution" target in spoken narration—subverting overplayed competitor openings in Chapter 0, answering mined viewer questions, and exposing the exact verified details competing YouTube clips skip.
+5. Return strictly valid JSON only.`
 
-	for i, ch := range outline.Chapters {
-		chIdx := i
-		chPlan := ch
-		if chIdx < len(windows) {
-			chPlan.StartSeconds = windows[chIdx][0]
-			chPlan.EndSeconds = windows[chIdx][1]
-		}
-		chDur := chPlan.EndSeconds - chPlan.StartSeconds
-		if chDur <= 0 {
-			chDur = 120
-		}
-		targetShots := (chDur + 6) / 7
-		if targetShots < 10 {
-			targetShots = 10
-		}
+	// Split chapters into 2 fast parallel batches (Act I: Ch 0..3, Act II: Ch 4..6)
+	// Reduces Stage 2 from 7 API calls down to 2 calls (~4x lower TPM & completes well within Vercel's 60s timeout).
+	splitIdx := len(outline.Chapters) / 2
+	if splitIdx < 1 {
+		splitIdx = len(outline.Chapters)
+	}
+	if len(outline.Chapters) == 7 {
+		splitIdx = 4
+	}
+	batches := [][]DocumentaryChapterOutlineAI{outline.Chapters[:splitIdx]}
+	if splitIdx < len(outline.Chapters) {
+		batches = append(batches, outline.Chapters[splitIdx:])
+	}
 
+	// On Groq, assign Batch 1 & Batch 2 to distinct live model buckets so both run in parallel well under free-tier TPM
+	batchCfgs := make([]AIConfig, len(batches))
+	for bi := range batches {
+		batchCfgs[bi] = cfg
+	}
+	if kind == "groq" && len(batches) > 1 && len(groqLive) >= 2 {
+		if len(groqLive) >= 3 {
+			batchCfgs[0].Model = groqLive[2] // e.g. openai/gpt-oss-20b (8K TPM, fresh bucket)
+			batchCfgs[1].Model = groqLive[0] // e.g. qwen/qwen3.8-27b (6K TPM)
+		} else {
+			batchCfgs[0].Model = groqLive[0]
+			batchCfgs[1].Model = groqLive[1]
+		}
+	}
+
+	type batchResult struct {
+		Chapters []DocumentaryChapterAI `json:"chapters"`
+	}
+	batchOuts := make([][]DocumentaryChapterAI, len(batches))
+	batchErrs := make([]error, len(batches))
+
+	var wg sync.WaitGroup
+	for bi, batchPlans := range batches {
+		bIdx := bi
+		plans := batchPlans
+		bCfg := batchCfgs[bi]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			chCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			chCtx, cancel := context.WithTimeout(ctx, 38*time.Second)
 			defer cancel()
 
-			factsJSON, _ := json.Marshal(chPlan.KeyFacts)
-			chUser := fmt.Sprintf(`Subject: %s
+			plansJSON, _ := json.Marshal(plans)
+			shotsPerCh := "12 to 16"
+			maxTok := 6000
+			if kind == "groq" || kind == "openrouter" {
+				shotsPerCh = "7 to 10"
+				maxTok = 2400
+			}
+			batchUser := fmt.Sprintf(`Subject: %s
 Biographical Field: %s
+Opening Archetype: %s
+Unique Underdog Angle: %s
 Central Documentary Question: %s
 Recurring Spatial Motif: %s
 Style: %s
 
-WRITE CHAPTER %d: "%s"
-Time Window: %s – %s (Total Duration: %d seconds)
-REQUIRED SHOT COUNT: Exactly %d to %d shots (every shot MUST be 4 to 7 seconds; NEVER exceed 7 seconds!)
-Chapter Narrative Arc: %s
-Chapter Spatial Motif: %s
-CHAPTER COMPETITIVE EXECUTION TARGET (MUST BE VISIBLY DELIVERED IN NARRATION): %s
-Allocated Verified Facts for This Chapter: %s
-Overall YouTube Competitive Positioning Brief: %s
+WRITE ALL CHAPTERS IN THIS BATCH (%d chapters):
+%s
 
-Full Subject Biography & Claims Reference (use ONLY real details grounded here):
+REQUIREMENTS FOR EVERY CHAPTER IN THIS BATCH:
+- Write %s tightly paced, source-grounded shots per chapter (every shot MUST be 4 to 7 seconds and <= 16 spoken words; NEVER exceed 7 seconds!).
+- Visibly execute each chapter's "strategyExecution" directive in spoken narration.
+- Chapter 0 MUST open with a fresh, subversive Underdog Cold Open matching "%s" (NEVER generic arena/room clichés).
+
+Competitive Positioning Brief Summary:
+%s
+
+Verified Subject Biography & Claims Reference (use ONLY real facts grounded here):
 %s
 %s
 
 Return strictly valid JSON matching:
 {
-  "chapterNumber": %d,
-  "title": "%s",
-  "startSeconds": %d,
-  "endSeconds": %d,
-  "shots": [
+  "chapters": [
     {
-      "visual": "Wide shot of ...",
-      "narration": "10 to 16 words of crisp, source-grounded documentary narration.",
-      "audioCue": "",
-      "durationSeconds": 7,
-      "locationRef": "Specific physical setting"
-    },
-    {
-      "visual": "Macro shot of ...",
-      "narration": "...continuation clause under 16 words.",
-      "audioCue": "",
-      "durationSeconds": 7,
-      "locationRef": "Specific physical setting"
+      "chapterNumber": 0,
+      "title": "Chapter Title",
+      "startSeconds": 0,
+      "endSeconds": 90,
+      "shots": [
+        {
+          "visual": "Wide shot of ...",
+          "narration": "10 to 16 words of crisp, source-grounded documentary narration.",
+          "audioCue": "",
+          "durationSeconds": 6,
+          "locationRef": "Specific physical setting"
+        }
+      ]
     }
   ]
 }`,
-				personName, outline.DetectedField, outline.CentralQuestion, outline.RecurringMotif, style,
-				chPlan.ChapterNumber, chPlan.Title, formatClockMMSS(chPlan.StartSeconds), formatClockMMSS(chPlan.EndSeconds), chDur,
-				targetShots, targetShots+4,
-				chPlan.NarrativeArc, chPlan.SpatialMotif, chPlan.StrategyExecution, string(factsJSON), competitiveBriefText,
-				bioForChapter, claimsForChapter,
-				chPlan.ChapterNumber, chPlan.Title, chPlan.StartSeconds, chPlan.EndSeconds)
+				personName, outline.DetectedField, outline.OpeningArchetype, outline.UnderdogAngle,
+				outline.CentralQuestion, outline.RecurringMotif, style,
+				len(plans), string(plansJSON), shotsPerCh, outline.OpeningArchetype,
+				compBriefForBatch, bioForBatch, claimsForBatch)
 
-			var built DocumentaryChapterAI
-			errCh := CallGeminiJSONWithOptions(chCtx, chapterSys, chUser, &built, GeminiCallOptions{
+			var res batchResult
+			_, errB := callGeminiWithConfig(chCtx, bCfg, chapterSys, batchUser, &res, GeminiCallOptions{
 				Temperature:     0.35,
-				MaxOutputTokens: 8192,
-				Timeout:         42 * time.Second,
+				MaxOutputTokens: maxTok,
+				Timeout:         36 * time.Second,
 			})
-			if errCh != nil {
-				chapterErrs[chIdx] = fmt.Errorf("chapter %d (%s): %w", chPlan.ChapterNumber, chPlan.Title, errCh)
+			if errB != nil {
+				batchErrs[bIdx] = fmt.Errorf("batch %d: %w", bIdx+1, errB)
 				return
 			}
-			if len(built.Shots) == 0 {
-				chapterErrs[chIdx] = fmt.Errorf("chapter %d (%s) returned zero shots", chPlan.ChapterNumber, chPlan.Title)
+			if len(res.Chapters) == 0 {
+				batchErrs[bIdx] = fmt.Errorf("batch %d returned zero chapters", bIdx+1)
 				return
 			}
-			built.ChapterNumber = chPlan.ChapterNumber
-			if strings.TrimSpace(built.Title) == "" {
-				built.Title = chPlan.Title
-			}
-			built.StartSeconds = chPlan.StartSeconds
-			built.EndSeconds = chPlan.EndSeconds
-			chaptersOut[chIdx] = built
+			batchOuts[bIdx] = res.Chapters
 		}()
 	}
 	wg.Wait()
 
-	for i, c := range chaptersOut {
-		if chapterErrs[i] != nil {
-			return nil, fmt.Errorf("stage 2 chapter generation failed: %w", chapterErrs[i])
+	for i := range batches {
+		if batchErrs[i] != nil {
+			return nil, fmt.Errorf("stage 2 chapter generation failed: %w", batchErrs[i])
 		}
-		if len(c.Shots) == 0 {
-			return nil, fmt.Errorf("stage 2 chapter %d returned zero shots", i)
+	}
+
+	// Map generated chapters cleanly onto the exact 7 outline chapter slots
+	byNum := map[int]DocumentaryChapterAI{}
+	var flat []DocumentaryChapterAI
+	for _, list := range batchOuts {
+		for _, c := range list {
+			if len(c.Shots) > 0 {
+				byNum[c.ChapterNumber] = c
+				flat = append(flat, c)
+			}
 		}
+	}
+
+	chaptersOut := make([]DocumentaryChapterAI, len(outline.Chapters))
+	for i, plan := range outline.Chapters {
+		ch, ok := byNum[plan.ChapterNumber]
+		if !ok && i < len(flat) {
+			ch = flat[i]
+		}
+		if len(ch.Shots) == 0 {
+			return nil, fmt.Errorf("stage 2 chapter %d (%s) returned zero shots", plan.ChapterNumber, plan.Title)
+		}
+		ch.ChapterNumber = plan.ChapterNumber
+		if strings.TrimSpace(ch.Title) == "" {
+			ch.Title = plan.Title
+		}
+		ch.StartSeconds = plan.StartSeconds
+		ch.EndSeconds = plan.EndSeconds
+		chaptersOut[i] = ch
 	}
 
 	return &DocumentaryScriptAI{
@@ -1356,7 +1478,7 @@ func RegenerateShotWithGemini(
 	tone string,
 ) (string, string, error) {
 	if !HasGeminiKey(ctx) {
-		return "", "", fmt.Errorf("gemini api key not set")
+		return "", "", fmt.Errorf("AI API key not set")
 	}
 	sysPrompt := `You are a prestige investigative documentary script editor.
 Refine a single <= 7-second documentary shot block (visual direction + narrator voiceover line).
@@ -1418,7 +1540,7 @@ func GenerateVideoPackagingWithGemini(
 	targetDurationMinutes int,
 ) (*VideoPackagingAI, error) {
 	if !HasGeminiKey(ctx) {
-		return nil, fmt.Errorf("gemini api key not set")
+		return nil, fmt.Errorf("AI API key not set")
 	}
 
 	sysPrompt := `You are TrendScout Studio's YouTube Documentary Growth & SEO Strategist.

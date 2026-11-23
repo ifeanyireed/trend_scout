@@ -398,7 +398,7 @@ export const ProductionStudioPage: React.FC = () => {
       });
       loadWorkspace();
     } catch (err: any) {
-      setScriptError(err?.message || 'Gemini AI shot refinement failed');
+      setScriptError(err?.message || 'AI shot refinement failed');
     } finally {
       setBusy(false);
     }
@@ -491,7 +491,7 @@ export const ProductionStudioPage: React.FC = () => {
       await apiFetch(`/api/projects/${proj.id}/seo/generate`, { method: 'POST', body: '{}' });
       loadWorkspace(proj.id);
     } catch (err: any) {
-      setSeoError(err?.message || 'Gemini AI YouTube SEO packaging failed');
+      setSeoError(err?.message || 'AI YouTube SEO packaging failed');
     } finally {
       setSeoBusy(false);
     }
@@ -504,7 +504,7 @@ export const ProductionStudioPage: React.FC = () => {
       await apiFetch(`/api/projects/${proj.id}/competitive-brief/generate`, { method: 'POST', body: '{}' });
       loadWorkspace(proj.id);
     } catch (err: any) {
-      setBriefError(err?.message || 'Gemini AI Stage 0 Competitor Study failed');
+      setBriefError(err?.message || 'AI Stage 0 Competitor Study failed');
     } finally {
       setBriefBusy(false);
     }

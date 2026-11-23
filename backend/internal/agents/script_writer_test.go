@@ -3,8 +3,11 @@ package agents
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+
+	"trendscout-backend/internal/db"
 )
 
 func TestDynamicBiographicalDomainDetection(t *testing.T) {
@@ -230,5 +233,34 @@ func TestStrictAIRequiredNoFallbacks(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatalf("expected RegenerateScriptBlock to return error when AI fails (no fallback)")
+	}
+}
+
+func TestLiveAIDocumentaryPipeline(t *testing.T) {
+	if os.Getenv("RUN_LIVE_AI_TEST") != "1" {
+		t.Skip("set RUN_LIVE_AI_TEST=1 to run live end-to-end AI Stage 0 + Stage 1 + Stage 2 documentary generation")
+	}
+	db.LoadEnvFile()
+	if _, err := db.ConnectAndMigrate(); err != nil {
+		t.Fatalf("db connect failed: %v", err)
+	}
+	ctx := context.Background()
+	projectID := os.Getenv("LIVE_TEST_PROJECT_ID")
+	if projectID == "" {
+		projectID = "proj-neeraj-chopra-8ac3"
+	}
+	scrID, err := GenerateDocumentaryScriptWithOptions(ctx, projectID, 20, "Investigative Archival Documentary", "auto")
+	if err != nil {
+		t.Fatalf("live AI documentary script generation failed: %v", err)
+	}
+	var hook, metaJSON, fullText string
+	var words int
+	if err := db.DB.QueryRowContext(ctx, `SELECT opening_hook, generation_meta_json, word_count, full_narration_text FROM documentary_scripts WHERE id = $1`, scrID).Scan(&hook, &metaJSON, &words, &fullText); err != nil {
+		t.Fatalf("failed reading saved script: %v", err)
+	}
+	t.Logf("LIVE AI SCRIPT SUCCEEDED: id=%s words=%d meta=%s", scrID, words, metaJSON)
+	t.Logf("OPENING HOOK: %s", hook)
+	if len(fullText) > 500 {
+		t.Logf("SCRIPT PREVIEW:\n%s", fullText[:500])
 	}
 }

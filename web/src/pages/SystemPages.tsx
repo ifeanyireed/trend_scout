@@ -211,7 +211,7 @@ export const SettingsPage: React.FC = () => {
     updateField('ai', 'geminiApiKey', val);
     if (trimmed.startsWith('gsk_')) {
       updateField('ai', 'provider', 'Groq');
-      updateField('ai', 'model', 'llama-3.3-70b-versatile');
+      updateField('ai', 'model', 'qwen/qwen3.8-27b');
     } else if (trimmed.startsWith('sk-or-')) {
       updateField('ai', 'provider', 'OpenRouter');
       updateField('ai', 'model', 'meta-llama/llama-3.3-70b-instruct:free');
@@ -226,10 +226,9 @@ export const SettingsPage: React.FC = () => {
 
   const activeProvider = settings.ai?.provider || 'Groq';
   const defaultGroqModels = [
-    { value: 'llama-3.3-70b-versatile', label: 'llama-3.3-70b-versatile (Recommended Free Tier)' },
+    { value: 'qwen/qwen3.8-27b', label: 'qwen/qwen3.8-27b (Recommended Free Tier)' },
     { value: 'openai/gpt-oss-120b', label: 'openai/gpt-oss-120b (High-Capacity Reasoning)' },
     { value: 'openai/gpt-oss-20b', label: 'openai/gpt-oss-20b (Fast Reasoning)' },
-    { value: 'llama-3.1-8b-instant', label: 'llama-3.1-8b-instant (Ultra Fast)' },
   ];
   const groqModelList =
     liveGroqModels.length > 0
