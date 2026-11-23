@@ -349,13 +349,33 @@ func BuildProductionPackageZip(
 		seoMd.WriteString("## Video Description\n\n")
 		seoMd.WriteString(strings.TrimSpace(desc) + "\n\n")
 	}
+	if mentions, ok := manifest["youtubeMentions"].([]string); ok && len(mentions) > 0 {
+		seoMd.WriteString("## Tagged YouTube Channels (@handles)\n\n")
+		seoMd.WriteString(strings.Join(mentions, " ") + "\n\n")
+	}
 	if tags, ok := manifest["youtubeTags"].([]string); ok && len(tags) > 0 {
 		seoMd.WriteString("## High-Performing Tags (Comma-Separated for YouTube Studio)\n\n")
 		seoMd.WriteString(strings.Join(tags, ", ") + "\n\n")
 	}
 	if hashtags, ok := manifest["youtubeHashtags"].([]string); ok && len(hashtags) > 0 {
 		seoMd.WriteString("## Hashtags\n\n")
-		seoMd.WriteString(strings.Join(hashtags, " ") + "\n")
+		seoMd.WriteString(strings.Join(hashtags, " ") + "\n\n")
+	}
+	if twCap, ok := manifest["twitterCaption"].(string); ok && strings.TrimSpace(twCap) != "" {
+		seoMd.WriteString("## X / Twitter Promotional Caption\n\n")
+		seoMd.WriteString(strings.TrimSpace(twCap) + "\n\n")
+	}
+	if twHandles, ok := manifest["twitterHandles"].([]string); ok && len(twHandles) > 0 {
+		seoMd.WriteString("## Verified X / Twitter Handles\n\n")
+		seoMd.WriteString(strings.Join(twHandles, " ") + "\n\n")
+	}
+	if igCap, ok := manifest["instagramCaption"].(string); ok && strings.TrimSpace(igCap) != "" {
+		seoMd.WriteString("## Instagram Promotional Caption\n\n")
+		seoMd.WriteString(strings.TrimSpace(igCap) + "\n\n")
+	}
+	if igHandles, ok := manifest["instagramHandles"].([]string); ok && len(igHandles) > 0 {
+		seoMd.WriteString("## Verified Instagram Handles\n\n")
+		seoMd.WriteString(strings.Join(igHandles, " ") + "\n")
 	}
 	_ = writeZipEntry(zw, "youtube-seo-packaging.md", []byte(seoMd.String()))
 

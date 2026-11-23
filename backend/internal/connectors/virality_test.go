@@ -132,3 +132,44 @@ func TestLiveYouTubeDataAPIV3(t *testing.T) {
 	t.Logf("LIVE YT API v3 OK -> title=%q views=%d likes=%d comments=%d vph=%.0f channel=%q subs=%d baseline=%.0f mult=%.1fx competing=%d url=%s",
 		vid.Title, vid.Views, vid.Likes, vid.Comments, vid.ViewsPerHour, vid.ChannelName, vid.ChannelSubscribers, vid.ChannelBaselineViews, vid.ChannelMultiplier, vid.CompetingVideosCount, vid.VideoURL)
 }
+
+func TestSocialHandleVerificationAndEntityExtraction(t *testing.T) {
+	// Reject fan pages, parody accounts, clip channels, and impersonators
+	for _, bad := range []string{"@neeraj_fanpage", "@olympics_daily", "@parody_account", "@unofficial_clips", "@tribute_edits", "@star_stan"} {
+		if !IsLikelyFanOrImpersonatorHandle(bad) {
+			t.Fatalf("expected %q to be rejected as fan/impersonator", bad)
+		}
+	}
+	// Accept legitimate official handles
+	for _, good := range []string{"@Neeraj_chopra1", "@Olympics", "@WorldAthletics", "@NVIDIA", "@neeraj____chopra"} {
+		if IsLikelyFanOrImpersonatorHandle(good) {
+			t.Fatalf("expected %q to be accepted as legitimate handle", good)
+		}
+	}
+
+	entities := ExtractCandidateEntities(
+		"Neeraj Chopra",
+		"Neeraj Chopra won Olympic gold at the Tokyo Olympics under World Athletics and Sports Authority of India. He trained with Klaus Bartonietz and competed against Arshad Nadeem.",
+		"Neeraj Chopra makes World Athletics history",
+		"Gold medal for India at World Athletics Championships",
+		nil,
+	)
+	if len(entities) < 2 {
+		t.Fatalf("expected notable entities extracted, got %v", entities)
+	}
+}
+
+func TestLiveWikidataSocialVerification(t *testing.T) {
+	if os.Getenv("RUN_LIVE_SOCIAL_VERIFY") != "1" {
+		t.Skip("set RUN_LIVE_SOCIAL_VERIFY=1 to test live Wikidata official social account verification")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	accounts := VerifyOfficialSocialAccounts(ctx, "Neeraj Chopra", []string{"World Athletics", "International Olympic Committee"}, "")
+	if len(accounts) == 0 {
+		t.Fatalf("expected at least 1 verified official account from Wikidata")
+	}
+	for _, a := range accounts {
+		t.Logf("VERIFIED OFFICIAL: %s (%s) [%s] YT=%q X=%q IG=%q", a.EntityName, a.EntityType, a.VerifiedBy, a.YouTubeHandle, a.TwitterHandle, a.InstagramHandle)
+	}
+}

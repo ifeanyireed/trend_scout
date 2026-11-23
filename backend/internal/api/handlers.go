@@ -637,6 +637,12 @@ func RegisterRoutes(mux *http.ServeMux) {
 				"videoDescription":  seo.VideoDescription,
 				"videoTags":         seo.Tags,
 				"videoHashtags":     seo.Hashtags,
+				"youtubeMentions":   seo.YouTubeMentions,
+				"twitterCaption":    seo.TwitterCaption,
+				"twitterHandles":    seo.TwitterHandles,
+				"instagramCaption":  seo.InstagramCaption,
+				"instagramHandles":  seo.InstagramHandles,
+				"verifiedAccounts":  seo.VerifiedAccounts,
 				"recommendedTitles": seo.RecommendedTitles,
 				"tagsCharCount":     seo.TagsCharCount,
 				"usedGemini":        seo.UsedGemini,
@@ -649,31 +655,56 @@ func RegisterRoutes(mux *http.ServeMux) {
 				VideoDescription string   `json:"videoDescription"`
 				VideoTags        []string `json:"videoTags"`
 				VideoHashtags    []string `json:"videoHashtags"`
+				YouTubeMentions  []string `json:"youtubeMentions"`
+				TwitterCaption   string   `json:"twitterCaption"`
+				TwitterHandles   []string `json:"twitterHandles"`
+				InstagramCaption string   `json:"instagramCaption"`
+				InstagramHandles []string `json:"instagramHandles"`
 			}
 			_ = readJSON(r, &req)
 			normTags := agents.NormalizeTags(req.VideoTags, 480)
 			normHashtags := agents.NormalizeHashtags(req.VideoHashtags, 12)
+			normMentions := agents.NormalizeHandles(req.YouTubeMentions, 10)
+			normTwHandles := agents.NormalizeHandles(req.TwitterHandles, 10)
+			normIgHandles := agents.NormalizeHandles(req.InstagramHandles, 10)
 			tagsJSON, _ := json.Marshal(normTags)
 			hashtagsJSON, _ := json.Marshal(normHashtags)
+			mentionsJSON, _ := json.Marshal(normMentions)
+			twHandlesJSON, _ := json.Marshal(normTwHandles)
+			igHandlesJSON, _ := json.Marshal(normIgHandles)
+			desc := agents.EnsureYouTubeMentionsInDescription(req.VideoDescription, normMentions)
+			twCaption := strings.TrimSpace(req.TwitterCaption)
+			igCaption := strings.TrimSpace(req.InstagramCaption)
 			_, err := db.DB.ExecContext(r.Context(), `
 				UPDATE discoveries
-				SET video_description = $2, video_tags_json = $3, video_hashtags_json = $4, updated_at = NOW()
+				SET video_description = $2, video_tags_json = $3, video_hashtags_json = $4,
+				    youtube_mentions_json = $5, twitter_caption = $6, twitter_handles_json = $7,
+				    instagram_caption = $8, instagram_handles_json = $9,
+				    updated_at = NOW()
 				WHERE id = $1
-			`, discID, strings.TrimSpace(req.VideoDescription), string(tagsJSON), string(hashtagsJSON))
+			`, discID, desc, string(tagsJSON), string(hashtagsJSON), string(mentionsJSON), twCaption, string(twHandlesJSON), igCaption, string(igHandlesJSON))
 			if err != nil {
 				writeJSON(w, 500, map[string]string{"error": err.Error()})
 				return
 			}
 			_, _ = db.DB.ExecContext(r.Context(), `
 				UPDATE documentary_projects
-				SET youtube_description = $2, youtube_tags_json = $3, youtube_hashtags_json = $4, updated_at = NOW()
+				SET youtube_description = $2, youtube_tags_json = $3, youtube_hashtags_json = $4,
+				    youtube_mentions_json = $5, twitter_caption = $6, twitter_handles_json = $7,
+				    instagram_caption = $8, instagram_handles_json = $9,
+				    updated_at = NOW()
 				WHERE discovery_id = $1
-			`, discID, strings.TrimSpace(req.VideoDescription), string(tagsJSON), string(hashtagsJSON))
+			`, discID, desc, string(tagsJSON), string(hashtagsJSON), string(mentionsJSON), twCaption, string(twHandlesJSON), igCaption, string(igHandlesJSON))
 			writeJSON(w, 200, map[string]any{
 				"ok":               true,
-				"videoDescription": strings.TrimSpace(req.VideoDescription),
+				"videoDescription": desc,
 				"videoTags":        normTags,
 				"videoHashtags":    normHashtags,
+				"youtubeMentions":  normMentions,
+				"twitterCaption":   twCaption,
+				"twitterHandles":   normTwHandles,
+				"instagramCaption": igCaption,
+				"instagramHandles": normIgHandles,
 				"tagsCharCount":    agents.TagsTotalChars(normTags),
 			})
 			return
@@ -1010,6 +1041,12 @@ func RegisterRoutes(mux *http.ServeMux) {
 				"youtubeDescription": seo.VideoDescription,
 				"youtubeTags":        seo.Tags,
 				"youtubeHashtags":    seo.Hashtags,
+				"youtubeMentions":    seo.YouTubeMentions,
+				"twitterCaption":     seo.TwitterCaption,
+				"twitterHandles":     seo.TwitterHandles,
+				"instagramCaption":   seo.InstagramCaption,
+				"instagramHandles":   seo.InstagramHandles,
+				"verifiedAccounts":   seo.VerifiedAccounts,
 				"youtubeTitles":      seo.RecommendedTitles,
 				"tagsCharCount":      seo.TagsCharCount,
 				"usedGemini":         seo.UsedGemini,
@@ -1032,31 +1069,56 @@ func RegisterRoutes(mux *http.ServeMux) {
 					YoutubeDescription string   `json:"youtubeDescription"`
 					YoutubeTags        []string `json:"youtubeTags"`
 					YoutubeHashtags    []string `json:"youtubeHashtags"`
+					YoutubeMentions    []string `json:"youtubeMentions"`
+					TwitterCaption     string   `json:"twitterCaption"`
+					TwitterHandles     []string `json:"twitterHandles"`
+					InstagramCaption   string   `json:"instagramCaption"`
+					InstagramHandles   []string `json:"instagramHandles"`
 				}
 				_ = readJSON(r, &req)
 				normTags := agents.NormalizeTags(req.YoutubeTags, 480)
 				normHashtags := agents.NormalizeHashtags(req.YoutubeHashtags, 12)
+				normMentions := agents.NormalizeHandles(req.YoutubeMentions, 10)
+				normTwHandles := agents.NormalizeHandles(req.TwitterHandles, 10)
+				normIgHandles := agents.NormalizeHandles(req.InstagramHandles, 10)
 				tagsJSON, _ := json.Marshal(normTags)
 				hashtagsJSON, _ := json.Marshal(normHashtags)
+				mentionsJSON, _ := json.Marshal(normMentions)
+				twHandlesJSON, _ := json.Marshal(normTwHandles)
+				igHandlesJSON, _ := json.Marshal(normIgHandles)
+				desc := agents.EnsureYouTubeMentionsInDescription(req.YoutubeDescription, normMentions)
+				twCaption := strings.TrimSpace(req.TwitterCaption)
+				igCaption := strings.TrimSpace(req.InstagramCaption)
 				_, err := db.DB.ExecContext(ctx, `
 					UPDATE documentary_projects
-					SET youtube_description = $2, youtube_tags_json = $3, youtube_hashtags_json = $4, updated_at = NOW()
+					SET youtube_description = $2, youtube_tags_json = $3, youtube_hashtags_json = $4,
+					    youtube_mentions_json = $5, twitter_caption = $6, twitter_handles_json = $7,
+					    instagram_caption = $8, instagram_handles_json = $9,
+					    updated_at = NOW()
 					WHERE id = $1
-				`, projectID, strings.TrimSpace(req.YoutubeDescription), string(tagsJSON), string(hashtagsJSON))
+				`, projectID, desc, string(tagsJSON), string(hashtagsJSON), string(mentionsJSON), twCaption, string(twHandlesJSON), igCaption, string(igHandlesJSON))
 				if err != nil {
 					writeJSON(w, 500, map[string]string{"error": err.Error()})
 					return
 				}
 				_, _ = db.DB.ExecContext(ctx, `
 					UPDATE discoveries
-					SET video_description = $2, video_tags_json = $3, video_hashtags_json = $4, updated_at = NOW()
+					SET video_description = $2, video_tags_json = $3, video_hashtags_json = $4,
+					    youtube_mentions_json = $5, twitter_caption = $6, twitter_handles_json = $7,
+					    instagram_caption = $8, instagram_handles_json = $9,
+					    updated_at = NOW()
 					WHERE id = (SELECT discovery_id FROM documentary_projects WHERE id = $1)
-				`, projectID, strings.TrimSpace(req.YoutubeDescription), string(tagsJSON), string(hashtagsJSON))
+				`, projectID, desc, string(tagsJSON), string(hashtagsJSON), string(mentionsJSON), twCaption, string(twHandlesJSON), igCaption, string(igHandlesJSON))
 				writeJSON(w, 200, map[string]any{
 					"ok":                 true,
-					"youtubeDescription": strings.TrimSpace(req.YoutubeDescription),
+					"youtubeDescription": desc,
 					"youtubeTags":        normTags,
 					"youtubeHashtags":    normHashtags,
+					"youtubeMentions":    normMentions,
+					"twitterCaption":     twCaption,
+					"twitterHandles":     normTwHandles,
+					"instagramCaption":   igCaption,
+					"instagramHandles":   normIgHandles,
 					"tagsCharCount":      agents.TagsTotalChars(normTags),
 				})
 			}
@@ -1591,19 +1653,38 @@ func getDiscoveryDetail(ctx interface {
 	var existingProjectID string
 	_ = db.DB.QueryRowContext(ctx, `SELECT id FROM documentary_projects WHERE discovery_id = $1 OR person_id = $2 LIMIT 1`, actualDiscID, personID).Scan(&existingProjectID)
 
-	var vidDesc, vidTagsJSON, vidHashtagsJSON string
+	var vidDesc, vidTagsJSON, vidHashtagsJSON, ytMentionsJSON, twCaption, twHandlesJSON, igCaption, igHandlesJSON, verifiedAccJSON string
 	_ = db.DB.QueryRowContext(ctx, `
-		SELECT COALESCE(video_description, ''), COALESCE(video_tags_json, '[]'), COALESCE(video_hashtags_json, '[]')
+		SELECT COALESCE(video_description, ''), COALESCE(video_tags_json, '[]'), COALESCE(video_hashtags_json, '[]'),
+		       COALESCE(youtube_mentions_json, '[]'), COALESCE(twitter_caption, ''), COALESCE(twitter_handles_json, '[]'),
+		       COALESCE(instagram_caption, ''), COALESCE(instagram_handles_json, '[]'), COALESCE(verified_accounts_json, '[]')
 		FROM discoveries WHERE id = $1
-	`, actualDiscID).Scan(&vidDesc, &vidTagsJSON, &vidHashtagsJSON)
-	var vidTags, vidHashtags []string
+	`, actualDiscID).Scan(&vidDesc, &vidTagsJSON, &vidHashtagsJSON, &ytMentionsJSON, &twCaption, &twHandlesJSON, &igCaption, &igHandlesJSON, &verifiedAccJSON)
+	var vidTags, vidHashtags, ytMentions, twHandles, igHandles []string
+	var verifiedAcc []map[string]any
 	_ = json.Unmarshal([]byte(vidTagsJSON), &vidTags)
 	_ = json.Unmarshal([]byte(vidHashtagsJSON), &vidHashtags)
+	_ = json.Unmarshal([]byte(ytMentionsJSON), &ytMentions)
+	_ = json.Unmarshal([]byte(twHandlesJSON), &twHandles)
+	_ = json.Unmarshal([]byte(igHandlesJSON), &igHandles)
+	_ = json.Unmarshal([]byte(verifiedAccJSON), &verifiedAcc)
 	if vidTags == nil {
 		vidTags = []string{}
 	}
 	if vidHashtags == nil {
 		vidHashtags = []string{}
+	}
+	if ytMentions == nil {
+		ytMentions = []string{}
+	}
+	if twHandles == nil {
+		twHandles = []string{}
+	}
+	if igHandles == nil {
+		igHandles = []string{}
+	}
+	if verifiedAcc == nil {
+		verifiedAcc = []map[string]any{}
 	}
 
 	// YouTube Intelligence: tracked breakout & competing videos + market/format gap summary
@@ -1714,6 +1795,12 @@ func getDiscoveryDetail(ctx interface {
 	target["videoDescription"] = vidDesc
 	target["videoTags"] = vidTags
 	target["videoHashtags"] = vidHashtags
+	target["youtubeMentions"] = ytMentions
+	target["twitterCaption"] = twCaption
+	target["twitterHandles"] = twHandles
+	target["instagramCaption"] = igCaption
+	target["instagramHandles"] = igHandles
+	target["verifiedAccounts"] = verifiedAcc
 	target["tagsCharCount"] = agents.TagsTotalChars(vidTags)
 	target["youtubeIntelligence"] = map[string]any{
 		"videoCount":           len(ytVideos),
@@ -1933,24 +2020,31 @@ func getProjectWorkspace(ctx interface {
 	Err() error
 	Value(key any) any
 }, projectID string) (map[string]any, error) {
-	var pID, dID, title, slug, status, style, ar, thumb, ytTitlesStr, ytDesc, ytTagsStr, ytHashtagsStr, compBriefStr, music, ua string
+	var pID, dID, title, slug, status, style, ar, thumb, ytTitlesStr, ytDesc, ytTagsStr, ytHashtagsStr, ytMentionsStr, twCaption, twHandlesStr, igCaption, igHandlesStr, verifiedAccStr, compBriefStr, music, ua string
 	var durMin, imgInt int
 	err := db.DB.QueryRowContext(ctx, `
 		SELECT person_id, COALESCE(discovery_id, ''), title, slug, status, target_duration_minutes,
 		       visual_style, aspect_ratio, image_interval_seconds, COALESCE(thumbnail_concept, ''),
 		       COALESCE(youtube_titles_json, '[]'), COALESCE(youtube_description, ''),
 		       COALESCE(youtube_tags_json, '[]'), COALESCE(youtube_hashtags_json, '[]'),
+		       COALESCE(youtube_mentions_json, '[]'), COALESCE(twitter_caption, ''), COALESCE(twitter_handles_json, '[]'),
+		       COALESCE(instagram_caption, ''), COALESCE(instagram_handles_json, '[]'), COALESCE(verified_accounts_json, '[]'),
 		       COALESCE(competitive_brief_json, '{}'), COALESCE(music_suggestions, ''), updated_at::text
 		FROM documentary_projects WHERE id = $1
-	`, projectID).Scan(&pID, &dID, &title, &slug, &status, &durMin, &style, &ar, &imgInt, &thumb, &ytTitlesStr, &ytDesc, &ytTagsStr, &ytHashtagsStr, &compBriefStr, &music, &ua)
+	`, projectID).Scan(&pID, &dID, &title, &slug, &status, &durMin, &style, &ar, &imgInt, &thumb, &ytTitlesStr, &ytDesc, &ytTagsStr, &ytHashtagsStr, &ytMentionsStr, &twCaption, &twHandlesStr, &igCaption, &igHandlesStr, &verifiedAccStr, &compBriefStr, &music, &ua)
 	if err != nil {
 		return nil, err
 	}
 
-	var ytTitles, ytTags, ytHashtags []string
+	var ytTitles, ytTags, ytHashtags, ytMentions, twHandles, igHandles []string
+	var verifiedAcc []map[string]any
 	_ = json.Unmarshal([]byte(ytTitlesStr), &ytTitles)
 	_ = json.Unmarshal([]byte(ytTagsStr), &ytTags)
 	_ = json.Unmarshal([]byte(ytHashtagsStr), &ytHashtags)
+	_ = json.Unmarshal([]byte(ytMentionsStr), &ytMentions)
+	_ = json.Unmarshal([]byte(twHandlesStr), &twHandles)
+	_ = json.Unmarshal([]byte(igHandlesStr), &igHandles)
+	_ = json.Unmarshal([]byte(verifiedAccStr), &verifiedAcc)
 	var compBrief map[string]any
 	if compBriefStr != "" && compBriefStr != "{}" {
 		_ = json.Unmarshal([]byte(compBriefStr), &compBrief)
@@ -1963,6 +2057,18 @@ func getProjectWorkspace(ctx interface {
 	}
 	if ytHashtags == nil {
 		ytHashtags = []string{}
+	}
+	if ytMentions == nil {
+		ytMentions = []string{}
+	}
+	if twHandles == nil {
+		twHandles = []string{}
+	}
+	if igHandles == nil {
+		igHandles = []string{}
+	}
+	if verifiedAcc == nil {
+		verifiedAcc = []map[string]any{}
 	}
 
 	// Script
@@ -2156,6 +2262,12 @@ func getProjectWorkspace(ctx interface {
 			"youtubeDescription":    ytDesc,
 			"youtubeTags":           ytTags,
 			"youtubeHashtags":       ytHashtags,
+			"youtubeMentions":       ytMentions,
+			"twitterCaption":        twCaption,
+			"twitterHandles":        twHandles,
+			"instagramCaption":      igCaption,
+			"instagramHandles":      igHandles,
+			"verifiedAccounts":      verifiedAcc,
 			"tagsCharCount":         agents.TagsTotalChars(ytTags),
 			"competitiveBrief":      compBrief,
 			"musicSuggestions":      music,

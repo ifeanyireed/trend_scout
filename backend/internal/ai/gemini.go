@@ -1517,16 +1517,102 @@ Return JSON:
 	return strings.TrimSpace(out.Visual), strings.TrimSpace(out.Narration), nil
 }
 
+type ConnectedEntityAI struct {
+	Name          string `json:"name"`
+	RelationGroup string `json:"relationGroup"` // subject | family_influential | coaches_mentors | teams_organizations | governing_bodies | competitors_contemporaries | media_journalists
+	RelationRole  string `json:"relationRole"`
+}
+
+// IdentifyConnectedEntitiesWithAI systematically researches all people & organizations connected to
+// a biography across all 7 relationship categories (subject, family/influential, coaches/mentors/trainers,
+// teams/clubs/organizations, governing bodies, competitors/contemporaries, journalists/commentators/media)
+// so their official social accounts can be independently verified via Wikipedia/Wikidata/YouTube.
+func IdentifyConnectedEntitiesWithAI(
+	ctx context.Context,
+	personName string,
+	biographicalField string,
+	country string,
+	headline string,
+	achievement string,
+	biography string,
+	mediaSources string,
+) ([]ConnectedEntityAI, error) {
+	if !HasGeminiKey(ctx) {
+		return nil, fmt.Errorf("AI API key not set")
+	}
+
+	if len(biography) > 2200 {
+		biography = biography[:2200]
+	}
+	if len(mediaSources) > 600 {
+		mediaSources = mediaSources[:600]
+	}
+
+	sysPrompt := `You are TrendScout Studio's Biographical Relationship & Ecosystem Researcher.
+Given a documentary subject and their biographical dossier, identify the exact real-world people and organizations connected to their story across ALL 7 categories so their official social accounts can be verified:
+1. "subject" — The subject of the documentary (always include first).
+2. "family_influential" — Publicly notable family members or influential figures connected to their journey (only include if publicly prominent/relevant).
+3. "coaches_mentors" — Coaches, mentors, trainers, advisors, or early backers.
+4. "teams_organizations" — Teams, clubs, academies, companies, universities, sponsors, or organizations they belonged to or built.
+5. "governing_bodies" — Official governing bodies, leagues, international federations, or regulatory/award institutions.
+6. "competitors_contemporaries" — Key rivals, competitors, or notable contemporaries in their field.
+7. "media_journalists" — Major sports/news/tech media organizations, broadcasters, or notable journalists/commentators covering their achievements.
+
+RULES:
+- Return 10 to 13 exact, canonical Wikipedia-searchable names (e.g., "World Athletics", "International Olympic Committee", "Arshad Nadeem", "Klaus Bartonietz", "ESPN", NOT generic phrases like "his father" or "local club").
+- Include at least 1–2 real entries per relevant category grounded in the biography, field, and media coverage.
+- Return strictly valid JSON only.`
+
+	userPrompt := fmt.Sprintf(`Subject: %s
+Biographical Field: %s
+Country / Origin: %s
+Headline: %s
+Achievement: %s
+
+Media & Channels Covering This Story:
+%s
+
+Biography Extract:
+%s
+
+Return strictly valid JSON:
+{
+  "entities": [
+    {"name": "%s", "relationGroup": "subject", "relationRole": "Documentary Subject"},
+    {"name": "Canonical Entity Name", "relationGroup": "governing_bodies", "relationRole": "Global Governing Body"}
+  ]
+}`, personName, biographicalField, country, headline, achievement, mediaSources, biography, personName)
+
+	var out struct {
+		Entities []ConnectedEntityAI `json:"entities"`
+	}
+	if err := CallGeminiJSONWithOptions(ctx, sysPrompt, userPrompt, &out, GeminiCallOptions{
+		Temperature:     0.2,
+		MaxOutputTokens: 900,
+		Timeout:         18 * time.Second,
+	}); err != nil {
+		return nil, err
+	}
+	return out.Entities, nil
+}
+
 type VideoPackagingAI struct {
 	RecommendedTitles []string `json:"recommendedTitles"`
 	VideoDescription  string   `json:"videoDescription"`
 	Tags              []string `json:"tags"`
 	Hashtags          []string `json:"hashtags"`
+	YouTubeMentions   []string `json:"youtubeMentions"`
+	TwitterCaption    string   `json:"twitterCaption"`
+	TwitterHandles    []string `json:"twitterHandles"`
+	InstagramCaption  string   `json:"instagramCaption"`
+	InstagramHandles  []string `json:"instagramHandles"`
 }
 
-// GenerateVideoPackagingWithGemini creates a high-CTR YouTube documentary description (with chapter timestamps),
-// high-performing SEO tags (kept cleanly within YouTube's 500-char tag budget), and hashtags for an opportunity/project,
-// optionally guided by Stage 0 YouTube Competitive Positioning Intelligence.
+// GenerateVideoPackagingWithGemini creates 3 platform-specific publishing materials:
+// 1) YouTube description (SEO summary, clickable verified @mentions, chapters, sources & credits, hashtags) + tags/titles
+// 2) X (Twitter) promotional caption (emotional hook, short description, verified X usernames, video link, hashtags)
+// 3) Instagram promotional caption (storytelling hook, verified Instagram usernames, hashtags, call to action)
+// strictly grounded in verified official accounts (zero fan pages or impersonators).
 func GenerateVideoPackagingWithGemini(
 	ctx context.Context,
 	personName string,
@@ -1537,33 +1623,68 @@ func GenerateVideoPackagingWithGemini(
 	biography string,
 	chapterTimestamps string,
 	competitiveBrief string,
+	verifiedAccountsRegistry string,
+	sourcesCredits string,
 	targetDurationMinutes int,
 ) (*VideoPackagingAI, error) {
 	if !HasGeminiKey(ctx) {
 		return nil, fmt.Errorf("AI API key not set")
 	}
 
-	sysPrompt := `You are TrendScout Studio's YouTube Documentary Growth & SEO Strategist.
-Write high-performing, search-optimized YouTube packaging for a prestige investigative biographical documentary.
-RULES:
-1. COMPETITIVE OUTPERFORMANCE: If a YouTube Competitive Positioning Brief is provided, engineer the titles, above-the-fold description hook, tags, and hashtags to outperform the competing videos' hooks, capture the exact viewer questions from comments, and exploit competitor blind spots/format gaps—WITHOUT copying competitor titles or phrasing.
-2. VIDEO DESCRIPTION:
-   - Open with a sharp 2-sentence above-the-fold hook optimized for YouTube search & browse previews (include subject's full name and core turning point naturally in the first 150 characters).
-   - Follow with a concise 1-paragraph factual editorial overview grounded strictly in the provided dossier.
-   - Include a clean "Chapters:" timestamp block using the exact provided chapter timestamps (if provided).
-   - Include a brief journalistic attribution note ("Every milestone in this film is grounded in public records and attributed reporting.") and a subtle subscribe/discussion prompt.
-   - End with 3–5 primary hashtags on the final line.
-3. HIGH-PERFORMING TAGS (16–22 tags):
-   - Mix exact-match subject name, biographical field/niche keywords, high-intent documentary search phrases ("<name> documentary", "<name> true story", "<name> biography"), event/institution keywords, and broader discovery terms.
-   - Total comma-separated length of all tags MUST stay <= 480 characters (YouTube's strict 500-char tag box limit).
-   - No leading # symbols on tags, no duplicate tags.
-4. HASHTAGS (8–12 hashtags):
-   - Every hashtag MUST begin with # and contain no spaces or punctuation (CamelCase e.g. #Documentary, #TrueStory, #Biography, plus subject & domain-specific tags).
-5. RECOMMENDED TITLES (3 titles):
-   - High-CTR prestige documentary titles (55–72 characters, zero clickbait spam).`
+	sysPrompt := `You are TrendScout Studio's YouTube Documentary Growth, SEO & Multi-Platform Publishing Strategist.
+Produce THREE separate, platform-native publishing materials for a prestige investigative biographical documentary, strictly tagging ONLY verified official accounts (NEVER fan pages, parody accounts, clip channels, or impersonators).
+
+CRITICAL ACCOUNT AUTHENTICITY RULE:
+- Prioritize the exact handles provided in the VERIFIED OFFICIAL ACCOUNTS REGISTRY below (verified via Wikidata Official Claims & YouTube Official Channel API).
+- You may ONLY add an additional official @handle for a major global organization/institution/public figure directly featured in the biography if you are 100% certain it is their genuine official account. NEVER guess or fabricate a handle, and NEVER tag fan pages, tribute accounts, updates accounts, or impersonators. If an entity has no verified official account on a platform, omit their handle rather than guessing.
+
+OUTPUT 1 — YOUTUBE DESCRIPTION & PACKAGING:
+- videoDescription MUST include all of the following cleanly formatted:
+  1. SEO-optimised biography summary: sharp 2-sentence above-the-fold hook (subject's full name & core turning point in the first 150 chars) + concise factual editorial overview grounded strictly in the dossier.
+  2. Chapters: exact provided chapter timestamps (if provided).
+  3. Relevant clickable YouTube @mentions: include a "Featured & Tagged Channels:" block tagging the legend's verified official YouTube @handle (if available) plus verified official YouTube @handles of notable individuals, corporations, federations, and institutions in the story.
+  4. Sources & Credits: concise attribution section citing the provided primary sources and archival/editorial credit ("Every milestone in this documentary is grounded in public records and attributed reporting.").
+  5. Relevant hashtags: 3–5 primary hashtags on the final line.
+- youtubeMentions: array of the exact verified YouTube @handles tagged (each starting with @, no spaces).
+- recommendedTitles: 3 high-CTR prestige documentary titles (55–72 chars, zero clickbait spam).
+- tags: 16–22 high-performing YouTube tags (total comma-separated length <= 480 chars, no # prefix, no duplicates).
+- hashtags: 8–12 CamelCase hashtags starting with #.
+
+OUTPUT 2 — X (TWITTER) PROMOTIONAL CAPTION:
+- twitterCaption MUST include:
+  1. An emotionally compelling opening hook.
+  2. A short, sharp description of the documentary's underdog arc.
+  3. Relevant verified X usernames (@handles) of the legend and notable individuals/organizations greatly impacted by the biography.
+  4. A clean video link slot: "Watch the full documentary: [VIDEO_LINK]"
+  5. 2–3 relevant hashtags.
+- Keep it tight, punchy, and ready to post on X (target ~230–275 chars where possible, or concise thread-starter under 320 chars if tagging several verified accounts).
+- twitterHandles: array of the exact verified X @handles tagged (starting with @, no spaces).
+
+OUTPUT 3 — INSTAGRAM PROMOTIONAL CAPTION:
+- instagramCaption MUST include:
+  1. A scroll-stopping storytelling hook on the first line (so it grabs attention before "...more").
+  2. A vivid 2–3 sentence narrative teaser highlighting the struggle, turning point, and human stakes.
+  3. Relevant verified Instagram usernames (@handles) of the legend and notable individuals/organizations naturally tagged.
+  4. A clear Call to Action (e.g. "Link in bio to watch the full 20-minute documentary. Save this post & comment who we should profile next.").
+  5. A clean block of 6–10 relevant Instagram hashtags at the bottom.
+- instagramHandles: array of the exact verified Instagram @handles tagged (starting with @, no spaces).`
 
 	if strings.TrimSpace(competitiveBrief) == "" {
 		competitiveBrief = "No competing YouTube brief cached yet; optimize for definitive prestige biographical search intent."
+	}
+	if strings.TrimSpace(sourcesCredits) == "" {
+		sourcesCredits = "Public biographical archives, primary press reporting, and official competition/institutional records."
+	}
+	if kind, _, _, _ := detectProviderKind(GetAIConfig(ctx)); kind == "groq" || kind == "openrouter" {
+		if len(biography) > 1900 {
+			biography = biography[:1900]
+		}
+		if len(competitiveBrief) > 1000 {
+			competitiveBrief = competitiveBrief[:1000]
+		}
+		if len(sourcesCredits) > 600 {
+			sourcesCredits = sourcesCredits[:600]
+		}
 	}
 
 	userPrompt := fmt.Sprintf(`Subject: %s
@@ -1572,7 +1693,13 @@ Country / Origin: %s
 Target Duration: %d minutes
 Latest Headline: %s
 Core Breakthrough / Turning Point: %s
+
 Chapter Timestamps:
+%s
+
+%s
+
+Verified Primary Sources & Credits Reference:
 %s
 
 YouTube Competitive Positioning Brief (Outperform these competitors in CTR & search positioning):
@@ -1584,16 +1711,21 @@ Biographical Dossier Extract:
 Return strictly valid JSON matching:
 {
   "recommendedTitles": ["Title 1", "Title 2", "Title 3"],
-  "videoDescription": "Full formatted YouTube video description with Chapters and closing hashtags",
+  "videoDescription": "Full formatted YouTube description with SEO summary, Chapters, Featured & Tagged Channels (@handles), Sources & Credits, and closing hashtags",
+  "youtubeMentions": ["@VerifiedSubjectYT", "@VerifiedOrgYT"],
   "tags": ["exact subject name", "subject documentary", "long tail seo tag"],
-  "hashtags": ["#SubjectName", "#Documentary", "#Biography"]
-}`, personName, biographicalField, country, targetDurationMinutes, headline, achievement, chapterTimestamps, competitiveBrief, biography)
+  "hashtags": ["#SubjectName", "#Documentary", "#Biography"],
+  "twitterCaption": "Emotionally compelling hook + short documentary description + verified @XHandles + Watch the full documentary: [VIDEO_LINK] + #Hashtags",
+  "twitterHandles": ["@VerifiedSubjectX", "@VerifiedImpactedOrgX"],
+  "instagramCaption": "Storytelling hook\\n\\nNarrative teaser tagging @VerifiedSubjectIG & @VerifiedOrgIG...\\n\\nCTA (Link in bio...)\\n\\n#Hashtags",
+  "instagramHandles": ["@VerifiedSubjectIG", "@VerifiedOrgIG"]
+}`, personName, biographicalField, country, targetDurationMinutes, headline, achievement, chapterTimestamps, verifiedAccountsRegistry, sourcesCredits, competitiveBrief, biography)
 
 	var out VideoPackagingAI
 	if err := CallGeminiJSONWithOptions(ctx, sysPrompt, userPrompt, &out, GeminiCallOptions{
 		Temperature:     0.35,
-		MaxOutputTokens: 2048,
-		Timeout:         25 * time.Second,
+		MaxOutputTokens: 2400,
+		Timeout:         30 * time.Second,
 	}); err != nil {
 		return nil, err
 	}

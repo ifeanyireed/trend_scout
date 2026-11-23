@@ -173,6 +173,38 @@ func TestVideoPackagingTagAndHashtagNormalization(t *testing.T) {
 			t.Fatalf("invalid hashtag format: %q", h)
 		}
 	}
+
+	// Verify official handle normalization & strict rejection of fan pages / impersonators
+	handles := NormalizeHandles([]string{
+		"https://www.youtube.com/@NeerajChopra1",
+		"@Olympics",
+		"WorldAthletics",
+		"@olympics",
+		"https://x.com/Media_SAI?s=20",
+		"@neeraj_fanpage",
+		"@neerajchopra_daily_edits",
+		"@neeraj_parody",
+		"@neeraj_unofficial",
+		"https://instagram.com/neeraj____chopra/",
+	}, 10)
+	wantHandles := []string{"@NeerajChopra1", "@Olympics", "@WorldAthletics", "@Media_SAI", "@neeraj____chopra"}
+	if len(handles) != len(wantHandles) {
+		t.Fatalf("expected %d verified official handles (filtering fan/parody), got %v", len(wantHandles), handles)
+	}
+	for i, want := range wantHandles {
+		if handles[i] != want {
+			t.Fatalf("handle[%d] = %q, want %q", i, handles[i], want)
+		}
+	}
+
+	baseDesc := "Inside the rise of @NeerajChopra1.\n\nChapters:\n0:00 Cold Open\n\n#NeerajChopra #Documentary"
+	withMentions := EnsureYouTubeMentionsInDescription(baseDesc, []string{"@NeerajChopra1", "@Olympics", "@WorldAthletics"})
+	if !strings.Contains(withMentions, "Featured & Tagged Channels: @Olympics @WorldAthletics") {
+		t.Fatalf("expected missing YouTube mentions inserted cleanly, got:\n%s", withMentions)
+	}
+	if strings.Index(withMentions, "Featured & Tagged Channels:") > strings.Index(withMentions, "#NeerajChopra") {
+		t.Fatalf("expected Featured & Tagged Channels before closing hashtags, got:\n%s", withMentions)
+	}
 }
 
 func TestCompetitiveBriefPromptFormatting(t *testing.T) {
@@ -218,7 +250,7 @@ func TestStrictAIRequiredNoFallbacks(t *testing.T) {
 	}
 
 	// 2. YouTube SEO Packaging MUST return error when no AI key is configured
-	if _, err := generateVideoSEOWithAI(ctx, "Neeraj Chopra", dom, "India", "Headline", "Achievement", "Bio", "0:00 Cold Open", "", 20); err == nil {
+	if _, err := generateVideoSEOWithAI(ctx, "Neeraj Chopra", dom, "India", "Headline", "Achievement", "Bio", "0:00 Cold Open", "", "", nil, "", 20); err == nil {
 		t.Fatalf("expected generateVideoSEOWithAI to return error without Gemini AI key (no fallback)")
 	}
 
@@ -263,4 +295,32 @@ func TestLiveAIDocumentaryPipeline(t *testing.T) {
 	if len(fullText) > 500 {
 		t.Logf("SCRIPT PREVIEW:\n%s", fullText[:500])
 	}
+}
+
+func TestLiveMultiPlatformSEOPackaging(t *testing.T) {
+	if os.Getenv("RUN_LIVE_SEO_TEST") != "1" {
+		t.Skip("set RUN_LIVE_SEO_TEST=1 to test live verified multi-platform SEO packaging (YouTube, X, Instagram)")
+	}
+	db.LoadEnvFile()
+	if _, err := db.ConnectAndMigrate(); err != nil {
+		t.Fatalf("db connect failed: %v", err)
+	}
+	ctx := context.Background()
+	projectID := os.Getenv("LIVE_TEST_PROJECT_ID")
+	if projectID == "" {
+		projectID = "proj-neeraj-chopra-8ac3"
+	}
+	seo, err := GenerateProjectVideoPackaging(ctx, projectID)
+	if err != nil {
+		t.Fatalf("GenerateProjectVideoPackaging failed: %v", err)
+	}
+	if seo.VideoDescription == "" || seo.TwitterCaption == "" || seo.InstagramCaption == "" {
+		t.Fatalf("expected all 3 platform outputs (YouTube, X, Instagram), got YT=%d X=%d IG=%d",
+			len(seo.VideoDescription), len(seo.TwitterCaption), len(seo.InstagramCaption))
+	}
+	t.Logf("VERIFIED OFFICIAL ACCOUNTS (%d): %+v", len(seo.VerifiedAccounts), seo.VerifiedAccounts)
+	t.Logf("YOUTUBE MENTIONS: %v", seo.YouTubeMentions)
+	t.Logf("YOUTUBE DESCRIPTION:\n%s", seo.VideoDescription)
+	t.Logf("X CAPTION (%d chars) [%v]:\n%s", len(seo.TwitterCaption), seo.TwitterHandles, seo.TwitterCaption)
+	t.Logf("INSTAGRAM CAPTION (%d chars) [%v]:\n%s", len(seo.InstagramCaption), seo.InstagramHandles, seo.InstagramCaption)
 }

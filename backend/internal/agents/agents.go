@@ -1918,26 +1918,42 @@ func GenerateProjectAudioAndSubtitles(ctx context.Context, projectID string) (st
 }
 
 func ExportProductionPackage(ctx context.Context, projectID string, assembleVideo bool) (map[string]any, error) {
-	var personID, projectTitle, visualStyle, aspectRatio, thumbConcept, ytTitlesJSON, ytDesc, ytTagsJSON, ytHashtagsJSON, musicSug string
+	var personID, projectTitle, visualStyle, aspectRatio, thumbConcept, ytTitlesJSON, ytDesc, ytTagsJSON, ytHashtagsJSON, ytMentionsJSON, twCaption, twHandlesJSON, igCaption, igHandlesJSON, verifiedAccJSON, musicSug string
 	err := db.DB.QueryRowContext(ctx, `
 		SELECT person_id, title, visual_style, aspect_ratio, COALESCE(thumbnail_concept, ''),
 		       COALESCE(youtube_titles_json, '[]'), COALESCE(youtube_description, ''),
 		       COALESCE(youtube_tags_json, '[]'), COALESCE(youtube_hashtags_json, '[]'),
+		       COALESCE(youtube_mentions_json, '[]'), COALESCE(twitter_caption, ''), COALESCE(twitter_handles_json, '[]'),
+		       COALESCE(instagram_caption, ''), COALESCE(instagram_handles_json, '[]'), COALESCE(verified_accounts_json, '[]'),
 		       COALESCE(music_suggestions, '')
 		FROM documentary_projects WHERE id = $1
-	`, projectID).Scan(&personID, &projectTitle, &visualStyle, &aspectRatio, &thumbConcept, &ytTitlesJSON, &ytDesc, &ytTagsJSON, &ytHashtagsJSON, &musicSug)
+	`, projectID).Scan(&personID, &projectTitle, &visualStyle, &aspectRatio, &thumbConcept, &ytTitlesJSON, &ytDesc, &ytTagsJSON, &ytHashtagsJSON, &ytMentionsJSON, &twCaption, &twHandlesJSON, &igCaption, &igHandlesJSON, &verifiedAccJSON, &musicSug)
 	if err != nil {
 		return nil, err
 	}
 
-	if ytTagsJSON == "[]" || ytHashtagsJSON == "[]" || strings.TrimSpace(ytDesc) == "" {
+	if ytTagsJSON == "[]" || ytHashtagsJSON == "[]" || strings.TrimSpace(ytDesc) == "" || strings.TrimSpace(twCaption) == "" || strings.TrimSpace(igCaption) == "" {
 		if seo, errSEO := GenerateProjectVideoPackaging(ctx, projectID); errSEO == nil && seo != nil {
 			ytDesc = seo.VideoDescription
+			twCaption = seo.TwitterCaption
+			igCaption = seo.InstagramCaption
 			if b, errM := json.Marshal(seo.Tags); errM == nil {
 				ytTagsJSON = string(b)
 			}
 			if b, errM := json.Marshal(seo.Hashtags); errM == nil {
 				ytHashtagsJSON = string(b)
+			}
+			if b, errM := json.Marshal(seo.YouTubeMentions); errM == nil {
+				ytMentionsJSON = string(b)
+			}
+			if b, errM := json.Marshal(seo.TwitterHandles); errM == nil {
+				twHandlesJSON = string(b)
+			}
+			if b, errM := json.Marshal(seo.InstagramHandles); errM == nil {
+				igHandlesJSON = string(b)
+			}
+			if b, errM := json.Marshal(seo.VerifiedAccounts); errM == nil {
+				verifiedAccJSON = string(b)
 			}
 			if ytTitlesJSON == "[]" {
 				if b, errM := json.Marshal(seo.RecommendedTitles); errM == nil {
@@ -2021,10 +2037,15 @@ func ExportProductionPackage(ctx context.Context, projectID string, assembleVide
 		cRows.Close()
 	}
 
-	var ytTitles, ytTags, ytHashtags []string
+	var ytTitles, ytTags, ytHashtags, ytMentions, twHandles, igHandles []string
+	var verifiedAcc []map[string]any
 	_ = json.Unmarshal([]byte(ytTitlesJSON), &ytTitles)
 	_ = json.Unmarshal([]byte(ytTagsJSON), &ytTags)
 	_ = json.Unmarshal([]byte(ytHashtagsJSON), &ytHashtags)
+	_ = json.Unmarshal([]byte(ytMentionsJSON), &ytMentions)
+	_ = json.Unmarshal([]byte(twHandlesJSON), &twHandles)
+	_ = json.Unmarshal([]byte(igHandlesJSON), &igHandles)
+	_ = json.Unmarshal([]byte(verifiedAccJSON), &verifiedAcc)
 	manifest := map[string]any{
 		"projectId":          projectID,
 		"projectTitle":       projectTitle,
@@ -2037,6 +2058,12 @@ func ExportProductionPackage(ctx context.Context, projectID string, assembleVide
 		"youtubeDescription": ytDesc,
 		"youtubeTags":        ytTags,
 		"youtubeHashtags":    ytHashtags,
+		"youtubeMentions":    ytMentions,
+		"twitterCaption":     twCaption,
+		"twitterHandles":     twHandles,
+		"instagramCaption":   igCaption,
+		"instagramHandles":   igHandles,
+		"verifiedAccounts":   verifiedAcc,
 		"musicSuggestions":   musicSug,
 		"exportedAt":         time.Now().UTC().Format(time.RFC3339),
 		"includedFiles": []string{

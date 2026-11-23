@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
-  Archive, ArchiveRestore, ArrowRight, Bookmark, Compass, Copy, ExternalLink, Eye, EyeOff, Film, Flame, Hash, Lock,
+  Archive, ArchiveRestore, ArrowRight, AtSign, Bookmark, Compass, Copy, ExternalLink, Eye, EyeOff, Film, Flame, Hash, Lock,
   MessageSquare, PlayCircle, RefreshCw, Save, Search, ShieldCheck, Sparkles, Tag, ThumbsUp, Trophy, TrendingUp, Activity, Bell, CheckCircle2, AlertCircle, Clock, Users
 } from 'lucide-react';
 import { apiFetch, hasActiveSession, setAuthSession } from '../api/client';
@@ -818,12 +818,25 @@ export const OpportunityDetailPage: React.FC = () => {
   const [videoDescription, setVideoDescription] = useState('');
   const [tagsInput, setTagsInput] = useState('');
   const [hashtagsInput, setHashtagsInput] = useState('');
+  const [ytMentionsInput, setYtMentionsInput] = useState('');
+  const [twitterCaption, setTwitterCaption] = useState('');
+  const [twitterHandlesInput, setTwitterHandlesInput] = useState('');
+  const [instagramCaption, setInstagramCaption] = useState('');
+  const [instagramHandlesInput, setInstagramHandlesInput] = useState('');
+  const [verifiedAccounts, setVerifiedAccounts] = useState<any[]>([]);
+  const [seoPlatformTab, setSeoPlatformTab] = useState<'youtube' | 'twitter' | 'instagram'>('youtube');
   const [seoSaved, setSeoSaved] = useState(false);
 
   const syncSeoState = (d: any) => {
     setVideoDescription(d?.videoDescription || '');
     setTagsInput(Array.isArray(d?.videoTags) ? d.videoTags.join(', ') : '');
     setHashtagsInput(Array.isArray(d?.videoHashtags) ? d.videoHashtags.join(' ') : '');
+    setYtMentionsInput(Array.isArray(d?.youtubeMentions) ? d.youtubeMentions.join(' ') : '');
+    setTwitterCaption(d?.twitterCaption || '');
+    setTwitterHandlesInput(Array.isArray(d?.twitterHandles) ? d.twitterHandles.join(' ') : '');
+    setInstagramCaption(d?.instagramCaption || '');
+    setInstagramHandlesInput(Array.isArray(d?.instagramHandles) ? d.instagramHandles.join(' ') : '');
+    setVerifiedAccounts(Array.isArray(d?.verifiedAccounts) ? d.verifiedAccounts : []);
   };
 
   const load = () => {
@@ -855,6 +868,15 @@ export const OpportunityDetailPage: React.FC = () => {
     .map((h) => h.trim())
     .filter(Boolean)
     .map((h) => (h.startsWith('#') ? h : `#${h}`));
+  const parseHandles = (raw: string) =>
+    raw
+      .split(/[\s,]+/)
+      .map((h) => h.trim())
+      .filter(Boolean)
+      .map((h) => (h.startsWith('@') ? h : `@${h}`));
+  const parsedYtMentions = parseHandles(ytMentionsInput);
+  const parsedTwHandles = parseHandles(twitterHandlesInput);
+  const parsedIgHandles = parseHandles(instagramHandlesInput);
   const tagsCharCount = parsedTags.join(', ').length;
 
   const copyText = (text: string, key: string) => {
@@ -911,6 +933,12 @@ export const OpportunityDetailPage: React.FC = () => {
       setVideoDescription(res.videoDescription || '');
       setTagsInput(Array.isArray(res.videoTags) ? res.videoTags.join(', ') : '');
       setHashtagsInput(Array.isArray(res.videoHashtags) ? res.videoHashtags.join(' ') : '');
+      setYtMentionsInput(Array.isArray(res.youtubeMentions) ? res.youtubeMentions.join(' ') : '');
+      setTwitterCaption(res.twitterCaption || '');
+      setTwitterHandlesInput(Array.isArray(res.twitterHandles) ? res.twitterHandles.join(' ') : '');
+      setInstagramCaption(res.instagramCaption || '');
+      setInstagramHandlesInput(Array.isArray(res.instagramHandles) ? res.instagramHandles.join(' ') : '');
+      setVerifiedAccounts(Array.isArray(res.verifiedAccounts) ? res.verifiedAccounts : []);
       load();
     } catch (err: any) {
       setAiActionError(err?.message || 'AI YouTube SEO packaging failed');
@@ -928,11 +956,21 @@ export const OpportunityDetailPage: React.FC = () => {
           videoDescription,
           videoTags: parsedTags,
           videoHashtags: parsedHashtags,
+          youtubeMentions: parsedYtMentions,
+          twitterCaption,
+          twitterHandles: parsedTwHandles,
+          instagramCaption,
+          instagramHandles: parsedIgHandles,
         }),
       });
       setVideoDescription(res.videoDescription || '');
       setTagsInput(Array.isArray(res.videoTags) ? res.videoTags.join(', ') : '');
       setHashtagsInput(Array.isArray(res.videoHashtags) ? res.videoHashtags.join(' ') : '');
+      setYtMentionsInput(Array.isArray(res.youtubeMentions) ? res.youtubeMentions.join(' ') : '');
+      setTwitterCaption(res.twitterCaption || '');
+      setTwitterHandlesInput(Array.isArray(res.twitterHandles) ? res.twitterHandles.join(' ') : '');
+      setInstagramCaption(res.instagramCaption || '');
+      setInstagramHandlesInput(Array.isArray(res.instagramHandles) ? res.instagramHandles.join(' ') : '');
       setSeoSaved(true);
       setTimeout(() => setSeoSaved(false), 2000);
     } finally {
@@ -1308,10 +1346,10 @@ export const OpportunityDetailPage: React.FC = () => {
           <div>
             <h2 className="text-base font-black text-display text-nexa-text-primary flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-nexa-brand" />
-              Video Description, High-Performing Tags &amp; Hashtags
+              Multi-Platform Publishing Materials (YouTube, X &amp; Instagram)
             </h2>
             <p className="text-xs text-nexa-text-secondary mt-0.5">
-              Search-optimized YouTube documentary description with chapter timestamps, high-intent SEO tags (≤500 chars), and hashtags.
+              Verified official @handles only (Wikidata &amp; YouTube Official Registry — zero fan pages or impersonators), YouTube SEO packaging with sources &amp; credits, plus ready-to-post X and Instagram captions.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1322,7 +1360,7 @@ export const OpportunityDetailPage: React.FC = () => {
               className="px-4 py-2 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold flex items-center gap-1.5 shadow-md shadow-nexa-brand/20 cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              {seoBusy ? 'Generating SEO...' : videoDescription ? 'Regenerate Description, Tags & Hashtags' : 'Generate Description, Tags & Hashtags'}
+              {seoBusy ? 'Verifying Accounts & Writing...' : videoDescription ? 'Regenerate All Publishing Materials' : 'Generate Publishing Materials'}
             </button>
             <button
               type="button"
@@ -1336,11 +1374,69 @@ export const OpportunityDetailPage: React.FC = () => {
           </div>
         </div>
 
+        {/* Verified Official Accounts Registry Strip */}
+        {verifiedAccounts.length > 0 && (
+          <div className="p-3.5 rounded-2xl bg-emerald-500/5 border border-emerald-500/25 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-[11px] font-extrabold text-emerald-500 uppercase flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                Verified Official Accounts ({verifiedAccounts.length} Authentic Entities — Fan Pages &amp; Impersonators Filtered)
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+              {verifiedAccounts.map((acc: any, idx: number) => (
+                <div key={idx} className="p-2.5 rounded-xl bg-nexa-bg-base border border-nexa-border text-[11px] space-y-1">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span className="font-extrabold text-nexa-text-primary truncate">{acc.entityName}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-500 text-[9px] font-extrabold uppercase shrink-0">
+                      {acc.relationRole || (acc.entityType === 'subject' ? 'Legend' : acc.entityType)}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 text-[10px]">
+                    {acc.youtubeHandle && <span className="px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-500 font-bold">YT: {acc.youtubeHandle}</span>}
+                    {acc.twitterHandle && <span className="px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-500 font-bold">X: {acc.twitterHandle}</span>}
+                    {acc.instagramHandle && <span className="px-2 py-0.5 rounded-full bg-fuchsia-500/10 text-fuchsia-500 font-bold">IG: {acc.instagramHandle}</span>}
+                  </div>
+                  <div className="text-[9px] text-nexa-text-muted truncate">{acc.verifiedBy}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 3 Separate Platform Tabs */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-nexa-border pb-3">
+          {[
+            { id: 'youtube' as const, label: '1. YouTube Description & SEO', count: parsedYtMentions.length ? `${parsedYtMentions.length} @mentions` : '' },
+            { id: 'twitter' as const, label: '2. X (Twitter) Promotional Caption', count: twitterCaption ? `${twitterCaption.length} chars` : '' },
+            { id: 'instagram' as const, label: '3. Instagram Promotional Caption', count: instagramCaption ? `${instagramCaption.length} chars` : '' },
+          ].map((pt) => (
+            <button
+              key={pt.id}
+              type="button"
+              onClick={() => setSeoPlatformTab(pt.id)}
+              className={`px-3.5 py-1.5 rounded-full text-xs font-extrabold flex items-center gap-2 transition cursor-pointer ${
+                seoPlatformTab === pt.id
+                  ? 'bg-nexa-brand text-white shadow-sm shadow-nexa-brand/20'
+                  : 'bg-nexa-bg-base border border-nexa-border text-nexa-text-secondary hover:border-nexa-brand'
+              }`}
+            >
+              <span>{pt.label}</span>
+              {pt.count && (
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${seoPlatformTab === pt.id ? 'bg-white/20 text-white' : 'bg-nexa-bg-surface text-nexa-text-muted'}`}>
+                  {pt.count}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {seoPlatformTab === 'youtube' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
           <div className="lg:col-span-7 space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-extrabold uppercase text-nexa-text-muted">
-                YouTube Video Description ({videoDescription.length} chars)
+                YouTube Description — SEO Summary, @Mentions, Chapters &amp; Sources ({videoDescription.length} chars)
               </label>
               <button
                 type="button"
@@ -1354,13 +1450,52 @@ export const OpportunityDetailPage: React.FC = () => {
             <textarea
               value={videoDescription}
               onChange={(e) => setVideoDescription(e.target.value)}
-              rows={11}
-              placeholder="Click 'Generate Description, Tags & Hashtags' to write a YouTube-ready documentary description with chapter timestamps..."
+              rows={13}
+              placeholder="Click 'Generate Publishing Materials' to create an SEO-optimised YouTube description with verified clickable @mentions, chapter timestamps, sources & credits, and hashtags..."
               className="w-full p-3.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs leading-relaxed text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
             />
           </div>
 
           <div className="lg:col-span-5 space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-extrabold uppercase text-nexa-text-muted flex items-center gap-1.5">
+                  <AtSign className="w-3.5 h-3.5 text-rose-500" />
+                  Verified YouTube @Mentions ({parsedYtMentions.length})
+                </label>
+                <button
+                  type="button"
+                  onClick={() => copyText(parsedYtMentions.join(' '), 'OPP_YT_MENTIONS')}
+                  disabled={parsedYtMentions.length === 0}
+                  className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" /> {copiedKey === 'OPP_YT_MENTIONS' ? 'Copied!' : 'Copy @Handles'}
+                </button>
+              </div>
+              <input
+                type="text"
+                value={ytMentionsInput}
+                onChange={(e) => setYtMentionsInput(e.target.value)}
+                placeholder="@LegendChannel @NotablePerson @Organization"
+                className="w-full px-3.5 py-2 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+              />
+              {parsedYtMentions.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {parsedYtMentions.map((m, idx) => (
+                    <a
+                      key={idx}
+                      href={`https://www.youtube.com/${m}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-2.5 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20 text-[11px] font-extrabold text-rose-500 hover:underline"
+                    >
+                      {m}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <label className="text-xs font-extrabold uppercase text-nexa-text-muted flex items-center gap-1.5">
@@ -1390,12 +1525,12 @@ export const OpportunityDetailPage: React.FC = () => {
               <textarea
                 value={tagsInput}
                 onChange={(e) => setTagsInput(e.target.value)}
-                rows={4}
+                rows={3}
                 placeholder="Comma-separated high-performing YouTube tags..."
                 className="w-full p-3 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
               />
               {parsedTags.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pt-1">
+                <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto pt-1">
                   {parsedTags.map((t, idx) => (
                     <span
                       key={idx}
@@ -1428,7 +1563,7 @@ export const OpportunityDetailPage: React.FC = () => {
                 value={hashtagsInput}
                 onChange={(e) => setHashtagsInput(e.target.value)}
                 placeholder="#Documentary #Biography #TrueStory"
-                className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+                className="w-full px-3.5 py-2 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
               />
               {parsedHashtags.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 pt-1">
@@ -1445,6 +1580,158 @@ export const OpportunityDetailPage: React.FC = () => {
             </div>
           </div>
         </div>
+        )}
+
+        {seoPlatformTab === 'twitter' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          <div className="lg:col-span-7 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <label className="text-xs font-extrabold uppercase text-nexa-text-muted">
+                X (Twitter) Promotional Caption — Emotional Hook, Summary, @Handles &amp; Video Link
+              </label>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                    twitterCaption.length > 280
+                      ? 'bg-amber-500/10 text-amber-500 border-amber-500/25'
+                      : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/25'
+                  }`}
+                >
+                  {twitterCaption.length} / 280 chars
+                </span>
+                <button
+                  type="button"
+                  onClick={() => copyText(twitterCaption, 'OPP_TW_CAP')}
+                  disabled={!twitterCaption}
+                  className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" /> {copiedKey === 'OPP_TW_CAP' ? 'Copied X Post!' : 'Copy X Post'}
+                </button>
+                {twitterCaption && (
+                  <a
+                    href={`https://x.com/intent/tweet?text=${encodeURIComponent(twitterCaption)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-2.5 py-0.5 rounded-full bg-sky-500/15 text-sky-500 text-[10px] font-extrabold hover:bg-sky-500/25 flex items-center gap-1"
+                  >
+                    Post on X <ExternalLink className="w-2.5 h-2.5" />
+                  </a>
+                )}
+              </div>
+            </div>
+            <textarea
+              value={twitterCaption}
+              onChange={(e) => setTwitterCaption(e.target.value)}
+              rows={6}
+              placeholder="Click 'Generate Publishing Materials' to draft an emotionally compelling X/Twitter post tagging verified individuals & organizations impacted by this biography..."
+              className="w-full p-3.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs leading-relaxed text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+            />
+          </div>
+          <div className="lg:col-span-5 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-extrabold uppercase text-nexa-text-muted flex items-center gap-1.5">
+                <AtSign className="w-3.5 h-3.5 text-sky-500" />
+                Verified X / Twitter Handles ({parsedTwHandles.length})
+              </label>
+              <button
+                type="button"
+                onClick={() => copyText(parsedTwHandles.join(' '), 'OPP_TW_HANDLES')}
+                disabled={parsedTwHandles.length === 0}
+                className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+              >
+                <Copy className="w-3 h-3" /> {copiedKey === 'OPP_TW_HANDLES' ? 'Copied!' : 'Copy Handles'}
+              </button>
+            </div>
+            <input
+              type="text"
+              value={twitterHandlesInput}
+              onChange={(e) => setTwitterHandlesInput(e.target.value)}
+              placeholder="@LegendHandle @ImpactedIndividual @ImpactedOrg"
+              className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+            />
+            {parsedTwHandles.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {parsedTwHandles.map((h, idx) => (
+                  <a
+                    key={idx}
+                    href={`https://x.com/${h.replace(/^@/, '')}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-2.5 py-0.5 rounded-full bg-sky-500/10 border border-sky-500/20 text-[11px] font-extrabold text-sky-500 hover:underline"
+                  >
+                    {h}
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        )}
+
+        {seoPlatformTab === 'instagram' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          <div className="lg:col-span-7 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-extrabold uppercase text-nexa-text-muted">
+                Instagram Promotional Caption — Storytelling Hook, @Handles, CTA &amp; Hashtags ({instagramCaption.length} chars)
+              </label>
+              <button
+                type="button"
+                onClick={() => copyText(instagramCaption, 'OPP_IG_CAP')}
+                disabled={!instagramCaption}
+                className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+              >
+                <Copy className="w-3 h-3" /> {copiedKey === 'OPP_IG_CAP' ? 'Copied Caption!' : 'Copy Instagram Caption'}
+              </button>
+            </div>
+            <textarea
+              value={instagramCaption}
+              onChange={(e) => setInstagramCaption(e.target.value)}
+              rows={9}
+              placeholder="Click 'Generate Publishing Materials' to write a storytelling Instagram caption with verified @usernames, hashtags, and call to action..."
+              className="w-full p-3.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs leading-relaxed text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+            />
+          </div>
+          <div className="lg:col-span-5 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-extrabold uppercase text-nexa-text-muted flex items-center gap-1.5">
+                <AtSign className="w-3.5 h-3.5 text-fuchsia-500" />
+                Verified Instagram Handles ({parsedIgHandles.length})
+              </label>
+              <button
+                type="button"
+                onClick={() => copyText(parsedIgHandles.join(' '), 'OPP_IG_HANDLES')}
+                disabled={parsedIgHandles.length === 0}
+                className="text-[11px] font-extrabold text-nexa-brand hover:underline flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+              >
+                <Copy className="w-3 h-3" /> {copiedKey === 'OPP_IG_HANDLES' ? 'Copied!' : 'Copy Handles'}
+              </button>
+            </div>
+            <input
+              type="text"
+              value={instagramHandlesInput}
+              onChange={(e) => setInstagramHandlesInput(e.target.value)}
+              placeholder="@legend_official @notable_person @organization"
+              className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary focus:outline-none focus:border-nexa-brand"
+            />
+            {parsedIgHandles.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {parsedIgHandles.map((h, idx) => (
+                  <a
+                    key={idx}
+                    href={`https://instagram.com/${h.replace(/^@/, '')}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-2.5 py-0.5 rounded-full bg-fuchsia-500/10 border border-fuchsia-500/20 text-[11px] font-extrabold text-fuchsia-500 hover:underline"
+                  >
+                    {h}
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        )}
       </div>
 
       {/* 8-Dimension Transparent Score Breakdown */}
