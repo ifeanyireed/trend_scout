@@ -184,11 +184,27 @@ func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCyc
 	result.SourcesScanned["src-reddit"] = len(redditCands)
 	result.SourcesScanned["src-wikipedia"] = len(wikiCands)
 
-	// Combine raw non-Wikipedia signals for Gemini human-subject extraction
+	// Combine raw non-Wikipedia signals by interleaving Google News, Google Trends, and Reddit
+	// so every platform is equally represented in the Gemini extraction batch (never starving Trends or Reddit)
 	var rawSignals []connectors.DiscoveredCandidate
-	rawSignals = append(rawSignals, newsCands...)
-	rawSignals = append(rawSignals, trendsCands...)
-	rawSignals = append(rawSignals, redditCands...)
+	maxLen := len(newsCands)
+	if len(trendsCands) > maxLen {
+		maxLen = len(trendsCands)
+	}
+	if len(redditCands) > maxLen {
+		maxLen = len(redditCands)
+	}
+	for i := 0; i < maxLen; i++ {
+		if i < len(newsCands) {
+			rawSignals = append(rawSignals, newsCands[i])
+		}
+		if i < len(trendsCands) {
+			rawSignals = append(rawSignals, trendsCands[i])
+		}
+		if i < len(redditCands) {
+			rawSignals = append(rawSignals, redditCands[i])
+		}
+	}
 	result.CandidatesFetched = len(rawSignals) + len(wikiCands)
 
 	// Step 2: Use Gemini AI (single batched call) to extract verified human subjects from live headlines (no fallback)
@@ -198,8 +214,8 @@ func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCyc
 	var curated []connectors.DiscoveredCandidate
 	if len(rawSignals) > 0 {
 		limit := len(rawSignals)
-		if limit > 30 {
-			limit = 30
+		if limit > 45 {
+			limit = 45
 		}
 		var inputs []ai.RawSignalInput
 		for i := 0; i < limit; i++ {
@@ -593,6 +609,455 @@ func RunLiveDiscoveryCycle(ctx context.Context, queries []string) (*DiscoveryCyc
 	return result, nil
 }
 
+// 2B. TARGETED PERSON SUGGESTION & MULTI-PLATFORM OPPORTUNITY SCOUT AGENT
+type SuggestPersonRequest struct {
+	PersonName string `json:"personName"`
+	Category   string `json:"category"`
+	Country    string `json:"country"`
+	FocusAngle string `json:"focusAngle"`
+}
+
+type SuggestPersonResult struct {
+	DiscoveryID    string         `json:"discoveryId"`
+	PersonID       string         `json:"personId"`
+	PersonName     string         `json:"personName"`
+	Headline       string         `json:"headline"`
+	Achievement    string         `json:"achievement"`
+	Category       string         `json:"category"`
+	Country        string         `json:"country"`
+	TrendStage     string         `json:"trendStage"`
+	AlreadyExisted bool           `json:"alreadyExisted"`
+	SourcesScanned map[string]int `json:"sourcesScanned"`
+	UsedGemini     bool           `json:"usedGemini"`
+	DurationMs     int64          `json:"durationMs"`
+}
+
+// ScoutSuggestedPerson takes a producer-suggested person name (plus optional angle, category, country),
+// goes out across Wikipedia, Google News, YouTube, and Reddit concurrently, synthesizes and scores the
+// documentary opportunity, runs deep biographical research, and persists or refreshes the opportunity.
+func ScoutSuggestedPerson(ctx context.Context, req SuggestPersonRequest) (*SuggestPersonResult, error) {
+	start := time.Now()
+	rawName := strings.TrimSpace(req.PersonName)
+	if rawName == "" {
+		return nil, fmt.Errorf("personName is required")
+	}
+
+	result := &SuggestPersonResult{
+		PersonName: rawName,
+		SourcesScanned: map[string]int{
+			"src-wikipedia":   0,
+			"src-google-news": 0,
+			"src-youtube":     0,
+			"src-reddit":      0,
+		},
+	}
+
+	aiCfg := ai.GetAIConfig(ctx)
+	fetchCtx, cancelFetch := context.WithTimeout(ctx, 12*time.Second)
+	defer cancelFetch()
+
+	var (
+		wikiProf    *connectors.WikiDeepProfile
+		newsCands   []connectors.DiscoveredCandidate
+		ytVideos    []connectors.VideoMetric
+		redditPosts []connectors.SocialMetric
+		fetchWG     sync.WaitGroup
+	)
+
+	fetchWG.Add(4)
+	go func() {
+		defer fetchWG.Done()
+		if p, err := connectors.FetchWikipediaProfile(fetchCtx, rawName); err == nil && p != nil {
+			wikiProf = p
+		}
+	}()
+	go func() {
+		defer fetchWG.Done()
+		newsCands = connectors.SearchGoogleNewsForPerson(fetchCtx, rawName, req.FocusAngle)
+		if len(newsCands) == 0 && strings.TrimSpace(req.FocusAngle) != "" {
+			newsCands = connectors.SearchGoogleNewsForPerson(fetchCtx, rawName, "")
+		}
+	}()
+	go func() {
+		defer fetchWG.Done()
+		if vids, err := connectors.LookupYouTubeIntelForPerson(fetchCtx, rawName, aiCfg.YouTubeAPIKey); err == nil && len(vids) > 0 {
+			ytVideos = vids
+		}
+	}()
+	go func() {
+		defer fetchWG.Done()
+		redditPosts = connectors.SearchRedditForPerson(fetchCtx, rawName)
+	}()
+	fetchWG.Wait()
+
+	// If Wikipedia resolved a canonical title different from rawName and YouTube/News missed under rawName, do a quick secondary lookup
+	canonicalName := rawName
+	var aliases []string
+	if wikiProf != nil && strings.TrimSpace(wikiProf.Title) != "" {
+		result.SourcesScanned["src-wikipedia"] = 1
+		canonicalName = strings.TrimSpace(wikiProf.Title)
+		if !strings.EqualFold(canonicalName, rawName) {
+			aliases = append(aliases, rawName)
+			if len(newsCands) == 0 {
+				newsCands = connectors.SearchGoogleNewsForPerson(fetchCtx, canonicalName, req.FocusAngle)
+			}
+			if len(ytVideos) == 0 {
+				if vids, err := connectors.LookupYouTubeIntelForPerson(fetchCtx, canonicalName, aiCfg.YouTubeAPIKey); err == nil {
+					ytVideos = vids
+				}
+			}
+			if len(redditPosts) == 0 {
+				redditPosts = connectors.SearchRedditForPerson(fetchCtx, canonicalName)
+			}
+		}
+	}
+
+	result.SourcesScanned["src-google-news"] = len(newsCands)
+	result.SourcesScanned["src-youtube"] = len(ytVideos)
+	result.SourcesScanned["src-reddit"] = len(redditPosts)
+	result.PersonName = canonicalName
+
+	category := strings.TrimSpace(req.Category)
+	if category == "" || strings.EqualFold(category, "auto") {
+		if wikiProf != nil && wikiProf.Category != "" {
+			category = wikiProf.Category
+		} else {
+			category = "Breakthrough & Human Interest"
+		}
+	}
+
+	country := strings.TrimSpace(req.Country)
+	if country == "" || strings.EqualFold(country, "auto") {
+		if wikiProf != nil && wikiProf.Country != "" {
+			country = wikiProf.Country
+		} else {
+			country = "Global"
+		}
+	}
+
+	wikiExtract := ""
+	imageURL := ""
+	summary := ""
+	if wikiProf != nil {
+		wikiExtract = strings.TrimSpace(wikiProf.Summary)
+		imageURL = strings.TrimSpace(wikiProf.ImageURL)
+		summary = wikiExtract
+	}
+
+	today := time.Now().Format("2006-01-02")
+	sourceID := "src-wikipedia"
+	platform := "Wikipedia"
+	publisher := "Wikipedia Biographical Archive"
+	sourceURL := fmt.Sprintf("https://en.wikipedia.org/wiki/%s", strings.ReplaceAll(canonicalName, " ", "_"))
+	eventDate := today
+	headline := ""
+	achievement := ""
+	eventTitle := ""
+
+	if len(newsCands) > 0 {
+		topNews := newsCands[0]
+		sourceID = "src-google-news"
+		platform = "News"
+		publisher = topNews.Publisher
+		sourceURL = topNews.SourceURL
+		if topNews.EventDate != "" {
+			eventDate = topNews.EventDate
+		}
+		headline = topNews.Headline
+		achievement = topNews.Achievement
+		eventTitle = topNews.Headline
+		if summary == "" {
+			summary = topNews.Summary
+		}
+	} else if wikiProf != nil && wikiExtract != "" {
+		sourceID = "src-wikipedia"
+		platform = "Wikipedia"
+		publisher = "Wikipedia Biographical Archive"
+		if wikiProf.PageURL != "" {
+			sourceURL = wikiProf.PageURL
+		}
+		firstSent := strings.Split(wikiExtract, ". ")[0]
+		if !strings.HasSuffix(firstSent, ".") {
+			firstSent += "."
+		}
+		headline = firstSent
+		achievement = firstSent
+		if wikiProf.Description != "" {
+			eventTitle = fmt.Sprintf("%s — %s", canonicalName, wikiProf.Description)
+		} else {
+			eventTitle = firstSent
+		}
+	} else if len(ytVideos) > 0 {
+		topVid := ytVideos[0]
+		sourceID = "src-youtube"
+		platform = "YouTube"
+		publisher = fmt.Sprintf("YouTube (%s)", topVid.ChannelName)
+		sourceURL = topVid.VideoURL
+		if topVid.PublishedAt != "" {
+			eventDate = topVid.PublishedAt
+		}
+		headline = topVid.Title
+		achievement = fmt.Sprintf("Breakout YouTube coverage (%d views, %.0f views/hr): %s", topVid.Views, topVid.ViewsPerHour, topVid.Title)
+		eventTitle = topVid.Title
+		if summary == "" {
+			summary = achievement
+		}
+	} else if len(redditPosts) > 0 {
+		topSoc := redditPosts[0]
+		sourceID = "src-reddit"
+		platform = "Reddit"
+		publisher = fmt.Sprintf("Reddit %s", topSoc.Subreddit)
+		sourceURL = topSoc.URL
+		if topSoc.PublishedAt != "" {
+			eventDate = topSoc.PublishedAt
+		}
+		headline = topSoc.Content
+		achievement = fmt.Sprintf("Reddit community breakout on %s (%d upvotes, %d comments): %s", topSoc.Subreddit, topSoc.Upvotes, topSoc.Comments, topSoc.Content)
+		eventTitle = topSoc.Content
+		if summary == "" {
+			summary = achievement
+		}
+	} else {
+		angle := strings.TrimSpace(req.FocusAngle)
+		if angle == "" {
+			angle = "Emerging Underdog & Breakthrough Story"
+		}
+		headline = fmt.Sprintf("%s — %s", canonicalName, angle)
+		achievement = fmt.Sprintf("%s scouted for documentary development: %s", canonicalName, angle)
+		eventTitle = headline
+		summary = achievement
+	}
+
+	if focus := strings.TrimSpace(req.FocusAngle); focus != "" {
+		if !strings.Contains(strings.ToLower(achievement), strings.ToLower(focus)) {
+			achievement = fmt.Sprintf("%s (Producer Focus: %s)", achievement, focus)
+		}
+		if summary == "" {
+			summary = achievement
+		}
+	}
+
+	cand := connectors.DiscoveredCandidate{
+		SourceID:    sourceID,
+		PersonName:  canonicalName,
+		Aliases:     aliases,
+		Category:    category,
+		Country:     country,
+		EventTitle:  eventTitle,
+		EventDate:   eventDate,
+		Achievement: achievement,
+		Headline:    headline,
+		SourceURL:   sourceURL,
+		Publisher:   publisher,
+		Platform:    platform,
+		Summary:     summary,
+		ImageURL:    imageURL,
+		WikiExtract: wikiExtract,
+	}
+	if len(ytVideos) > 0 {
+		topV := ytVideos[0]
+		cand.Video = &topV
+	}
+	if len(redditPosts) > 0 {
+		topR := redditPosts[0]
+		cand.Social = &topR
+	}
+
+	personID, eventID, err := ResolvePersonAndEvent(ctx, cand)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update person metadata with newly fetched live profile data if richer
+	if imageURL != "" {
+		_, _ = db.DB.ExecContext(ctx, `
+			UPDATE people SET image_url = $2, updated_at = NOW()
+			WHERE id = $1 AND (image_url IS NULL OR image_url = '' OR image_url LIKE '%default-portrait%')
+		`, personID, imageURL)
+	}
+	if category != "" && category != "Breakthrough & Human Interest" {
+		_, _ = db.DB.ExecContext(ctx, `UPDATE people SET category = $2, updated_at = NOW() WHERE id = $1`, personID, category)
+	}
+	if country != "" && country != "Global" {
+		_, _ = db.DB.ExecContext(ctx, `UPDATE people SET country = $2, updated_at = NOW() WHERE id = $1`, personID, country)
+	}
+
+	// Compute velocity & trend stage from live YouTube/Reddit/News/Wikipedia coverage
+	var viewsTotal int64 = 0
+	var vph float64 = 0
+	var chanRel float64 = 1.0
+	indCov := 0
+	if len(newsCands) > 0 {
+		indCov += len(newsCands)
+	}
+	if cand.Video != nil && cand.Video.Views > 0 {
+		viewsTotal = cand.Video.Views
+		vph = cand.Video.ViewsPerHour
+		chanRel = cand.Video.ChannelMultiplier
+		indCov++
+		if cand.Video.CompetingVideosCount >= 3 {
+			indCov++
+		}
+	}
+	if cand.Social != nil && cand.Social.Upvotes > 0 {
+		ageHrs := cand.Social.AgeHours
+		if ageHrs <= 0 {
+			ageHrs = 24.0
+		}
+		if cand.Video == nil {
+			viewsTotal = cand.Social.Upvotes + cand.Social.Comments
+			vph = math.Round(float64(cand.Social.Upvotes) / ageHrs)
+		}
+		indCov++
+	}
+	if wikiExtract != "" {
+		indCov++
+	}
+	if indCov < 1 {
+		indCov = 1
+	}
+
+	stage := "Early Whisper"
+	switch {
+	case vph >= 12000 || (viewsTotal >= 350000 && chanRel >= 3.5):
+		stage = "Major Viral Opportunity"
+	case vph >= 3500 || (viewsTotal >= 100000 && chanRel >= 2.0):
+		stage = "Accelerating"
+	case vph >= 500 || viewsTotal >= 15000 || indCov >= 3:
+		stage = "Emerging"
+	default:
+		stage = "Early Whisper"
+	}
+
+	var discID string
+	errCheck := db.DB.QueryRowContext(ctx, `SELECT id FROM discoveries WHERE person_id = $1 ORDER BY updated_at DESC LIMIT 1`, personID).Scan(&discID)
+	if errCheck == nil && discID != "" {
+		result.AlreadyExisted = true
+		_, _ = db.DB.ExecContext(ctx, `
+			UPDATE discoveries
+			SET event_id = $2, source_id = $3, headline = $4, achievement = $5,
+			    source_url = $6, publisher = $7, trend_stage = $8,
+			    independent_coverage_count = GREATEST(independent_coverage_count, $9),
+			    status = 'active', updated_at = NOW()
+			WHERE id = $1
+		`, discID, eventID, cand.SourceID, cand.Headline, cand.Achievement, cand.SourceURL, cand.Publisher, stage, indCov)
+	} else {
+		discID = "disc-" + uuid.NewString()[:8]
+		_, err = db.DB.ExecContext(ctx, `
+			INSERT INTO discoveries (id, person_id, event_id, source_id, headline, achievement, source_url, publisher, trend_stage, independent_coverage_count, research_status, status)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed', 'active')
+		`, discID, personID, eventID, cand.SourceID, cand.Headline, cand.Achievement, cand.SourceURL, cand.Publisher, stage, indCov)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Persist all discovered news articles
+	for _, nc := range newsCands {
+		_, _ = db.DB.ExecContext(ctx, `
+			INSERT INTO news_articles (id, person_id, discovery_id, title, url, publisher, author, summary, published_at)
+			VALUES ($1, $2, $3, $4, $5, $6, 'Targeted Person Scout', $7, $8)
+			ON CONFLICT (url) DO NOTHING
+		`, "news-"+uuid.NewString()[:8], personID, discID, nc.Headline, nc.SourceURL, nc.Publisher, nc.Summary, nc.EventDate)
+	}
+	if len(newsCands) == 0 {
+		_, _ = db.DB.ExecContext(ctx, `
+			INSERT INTO news_articles (id, person_id, discovery_id, title, url, publisher, author, summary, published_at)
+			VALUES ($1, $2, $3, $4, $5, $6, 'Targeted Person Scout', $7, $8)
+			ON CONFLICT (url) DO NOTHING
+		`, "news-"+uuid.NewString()[:8], personID, discID, cand.Headline, cand.SourceURL, cand.Publisher, cand.Summary, cand.EventDate)
+	}
+
+	// Persist all discovered YouTube videos
+	if len(ytVideos) > 0 {
+		_, _ = db.DB.ExecContext(ctx, `DELETE FROM videos WHERE discovery_id = $1 OR person_id = $2`, discID, personID)
+		for _, v := range ytVideos {
+			_, _ = db.DB.ExecContext(ctx, `
+				INSERT INTO videos (
+					id, person_id, discovery_id, external_video_id, platform, title, channel_name,
+					channel_subscribers, url, views, likes, comments, views_per_hour, views_per_day,
+					channel_relative_multiplier, published_at, duration_seconds, video_format,
+					engagement_rate, channel_baseline_views, thumbnail_url
+				) VALUES ($1,$2,$3,$4,'YouTube',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+				ON CONFLICT (external_video_id) DO UPDATE SET
+					discovery_id = EXCLUDED.discovery_id,
+					views = EXCLUDED.views,
+					likes = EXCLUDED.likes,
+					comments = EXCLUDED.comments,
+					channel_subscribers = EXCLUDED.channel_subscribers,
+					views_per_hour = EXCLUDED.views_per_hour,
+					views_per_day = EXCLUDED.views_per_day,
+					channel_relative_multiplier = EXCLUDED.channel_relative_multiplier,
+					duration_seconds = EXCLUDED.duration_seconds,
+					video_format = EXCLUDED.video_format,
+					engagement_rate = EXCLUDED.engagement_rate,
+					channel_baseline_views = EXCLUDED.channel_baseline_views,
+					thumbnail_url = EXCLUDED.thumbnail_url,
+					recorded_at = NOW()
+			`, "vid-"+uuid.NewString()[:8], personID, discID, v.ExternalID, v.Title,
+				v.ChannelName, v.ChannelSubscribers, v.VideoURL,
+				v.Views, v.Likes, v.Comments,
+				v.ViewsPerHour, v.ViewsPerDay, v.ChannelMultiplier, v.PublishedAt,
+				v.DurationSeconds, v.VideoFormat, v.EngagementRate,
+				v.ChannelBaselineViews, v.ThumbnailURL)
+		}
+	}
+
+	// Persist all discovered Reddit social posts
+	for _, sp := range redditPosts {
+		_, _ = db.DB.ExecContext(ctx, `
+			INSERT INTO social_posts (
+				id, person_id, discovery_id, platform, external_post_id, author, content,
+				url, upvotes_or_likes, comments_count, shares_count, published_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			ON CONFLICT (external_post_id) DO UPDATE SET
+				upvotes_or_likes = EXCLUDED.upvotes_or_likes,
+				comments_count = EXCLUDED.comments_count,
+				recorded_at = NOW()
+		`, "soc-"+uuid.NewString()[:8], personID, discID, sp.Platform, sp.ExternalID,
+			sp.Author, sp.Content, sp.URL,
+			sp.Upvotes, sp.Comments, sp.Shares, sp.PublishedAt)
+	}
+
+	usedGemini := ai.HasGeminiKey(ctx)
+	_ = runUnderdogAssessmentWithOptions(ctx, personID, discID, cand, usedGemini)
+	_ = RecordTrendObservation(ctx, discID, personID, stage, viewsTotal, vph, vph*24.0, chanRel, indCov)
+	_, _ = RunDeepResearchAndVerificationWithProfile(ctx, personID, discID, wikiProf)
+
+	newFlag := 0
+	if !result.AlreadyExisted {
+		newFlag = 1
+	}
+	recordSourceRun(ctx, "src-wikipedia", result.SourcesScanned["src-wikipedia"], newFlag, "")
+	recordSourceRun(ctx, "src-google-news", result.SourcesScanned["src-google-news"], 0, "")
+	recordSourceRun(ctx, "src-youtube", result.SourcesScanned["src-youtube"], 0, "")
+	recordSourceRun(ctx, "src-reddit", result.SourcesScanned["src-reddit"], 0, "")
+
+	_ = DispatchNotification(
+		ctx,
+		"person_suggested_discovery",
+		"info",
+		fmt.Sprintf("Scouted Opportunity: %s (%s)", canonicalName, stage),
+		fmt.Sprintf("Pulled live multi-platform intelligence (%d news, %d YouTube videos, %d Reddit threads) — %s",
+			len(newsCands), len(ytVideos), len(redditPosts), truncateText(cand.Headline, 120)),
+		fmt.Sprintf("/opportunities/%s", discID),
+		discID,
+		"",
+		fmt.Sprintf("suggest-disc-%s-%d", discID, time.Now().Unix()/60),
+	)
+
+	result.DiscoveryID = discID
+	result.PersonID = personID
+	result.Headline = cand.Headline
+	result.Achievement = cand.Achievement
+	result.Category = category
+	result.Country = country
+	result.TrendStage = stage
+	result.UsedGemini = usedGemini
+	result.DurationMs = time.Since(start).Milliseconds()
+	return result, nil
+}
+
 // 3. TREND MONITORING AGENT
 func RecordTrendObservation(
 	ctx context.Context,
@@ -951,81 +1416,79 @@ func runUnderdogAssessmentWithOptions(ctx context.Context, personID string, disc
 		"saturation_risk":          satRationale,
 	}
 
-	// Strictly Google Gemini AI Assessment (no local fallback)
-	if !allowGemini || !ai.HasGeminiKey(ctx) {
-		return fmt.Errorf("Gemini AI required for Underdog Assessment: no Gemini API key configured in Settings")
-	}
-	gemCtx, cancelGem := context.WithTimeout(ctx, 12*time.Second)
-	eval, errAI := ai.EvaluateUnderdogWithGemini(gemCtx, cand.PersonName, cand.Headline, cand.Achievement, cand.WikiExtract, ytViews, ytVPH, redditUps, redditComments)
-	cancelGem()
-	if errAI != nil || eval == nil {
-		return fmt.Errorf("Gemini AI Underdog Assessment failed: %s", sanitizeAIErrorForUI(errAI))
-	}
-	if eval.Classification != "" {
-		classification = eval.Classification
-	}
-	if eval.OriginsSummary != "" {
-		origins = eval.OriginsSummary
-	}
-	if eval.EarlyAmbitions != "" {
-		ambitions = eval.EarlyAmbitions
-	}
-	if eval.Disadvantages != "" {
-		disadvantages = eval.Disadvantages
-	}
-	if eval.RejectionsAndFailures != "" {
-		rejections = eval.RejectionsAndFailures
-	}
-	if eval.Obstacles != "" {
-		obstacles = eval.Obstacles
-	}
-	if eval.TurningPoints != "" {
-		turningPoints = eval.TurningPoints
-	}
-	if eval.CareerProgression != "" {
-		progression = eval.CareerProgression
-	}
-	if eval.RecentBreakthrough != "" {
-		breakthrough = eval.RecentBreakthrough
-	}
-	if eval.ContradictionsReport != "" {
-		contraReport = eval.ContradictionsReport
-	}
-	if eval.ResearchGapsReport != "" {
-		gapsReport = eval.ResearchGapsReport
-	}
-	if eval.AudienceInterestReport != "" {
-		audienceReport = eval.AudienceInterestReport
-	}
-	if eval.OverallScore > 0 {
-		overallScore = eval.OverallScore
-	}
-	if eval.UnderdogStrength > 0 {
-		uStrength = eval.UnderdogStrength
-	}
-	if eval.TransformationScore > 0 {
-		transScore = eval.TransformationScore
-	}
-	if eval.AchievementSignificance > 0 {
-		achSig = eval.AchievementSignificance
-	}
-	if eval.AudienceMomentum > 0 {
-		audMom = eval.AudienceMomentum
-	}
-	if eval.DocumentaryPotential > 0 {
-		docPot = eval.DocumentaryPotential
-	}
-	if eval.TimelinessScore > 0 {
-		timeScore = eval.TimelinessScore
-	}
-	if eval.EvidenceConfidence > 0 {
-		evConf = eval.EvidenceConfidence
-	}
-	if eval.SaturationRisk > 0 {
-		satRisk = eval.SaturationRisk
-	}
-	if len(eval.ScoreRationale) > 0 {
-		rationale = eval.ScoreRationale
+	// Google Gemini / Active AI Provider Assessment (enriches baseline scores when available; always persists)
+	if allowGemini && ai.HasGeminiKey(ctx) {
+		gemCtx, cancelGem := context.WithTimeout(ctx, 12*time.Second)
+		eval, errAI := ai.EvaluateUnderdogWithGemini(gemCtx, cand.PersonName, cand.Headline, cand.Achievement, cand.WikiExtract, ytViews, ytVPH, redditUps, redditComments)
+		cancelGem()
+		if errAI == nil && eval != nil {
+			if eval.Classification != "" {
+				classification = eval.Classification
+			}
+			if eval.OriginsSummary != "" {
+				origins = eval.OriginsSummary
+			}
+			if eval.EarlyAmbitions != "" {
+				ambitions = eval.EarlyAmbitions
+			}
+			if eval.Disadvantages != "" {
+				disadvantages = eval.Disadvantages
+			}
+			if eval.RejectionsAndFailures != "" {
+				rejections = eval.RejectionsAndFailures
+			}
+			if eval.Obstacles != "" {
+				obstacles = eval.Obstacles
+			}
+			if eval.TurningPoints != "" {
+				turningPoints = eval.TurningPoints
+			}
+			if eval.CareerProgression != "" {
+				progression = eval.CareerProgression
+			}
+			if eval.RecentBreakthrough != "" {
+				breakthrough = eval.RecentBreakthrough
+			}
+			if eval.ContradictionsReport != "" {
+				contraReport = eval.ContradictionsReport
+			}
+			if eval.ResearchGapsReport != "" {
+				gapsReport = eval.ResearchGapsReport
+			}
+			if eval.AudienceInterestReport != "" {
+				audienceReport = eval.AudienceInterestReport
+			}
+			if eval.OverallScore > 0 {
+				overallScore = eval.OverallScore
+			}
+			if eval.UnderdogStrength > 0 {
+				uStrength = eval.UnderdogStrength
+			}
+			if eval.TransformationScore > 0 {
+				transScore = eval.TransformationScore
+			}
+			if eval.AchievementSignificance > 0 {
+				achSig = eval.AchievementSignificance
+			}
+			if eval.AudienceMomentum > 0 {
+				audMom = eval.AudienceMomentum
+			}
+			if eval.DocumentaryPotential > 0 {
+				docPot = eval.DocumentaryPotential
+			}
+			if eval.TimelinessScore > 0 {
+				timeScore = eval.TimelinessScore
+			}
+			if eval.EvidenceConfidence > 0 {
+				evConf = eval.EvidenceConfidence
+			}
+			if eval.SaturationRisk > 0 {
+				satRisk = eval.SaturationRisk
+			}
+			if len(eval.ScoreRationale) > 0 {
+				rationale = eval.ScoreRationale
+			}
+		}
 	}
 
 	_, err := db.DB.ExecContext(ctx, `
@@ -2183,6 +2646,27 @@ func RegisterQueueHandlers() {
 	queue.GlobalQueue.Register("discovery_scan", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
 		n, err := RunDiscoveryCycle(ctx, nil)
 		return map[string]any{"newDiscoveries": n}, err
+	})
+	queue.GlobalQueue.Register("person_scout", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
+		pName, _ := payload["personName"].(string)
+		cat, _ := payload["category"].(string)
+		cnt, _ := payload["country"].(string)
+		ang, _ := payload["focusAngle"].(string)
+		res, err := ScoutSuggestedPerson(ctx, SuggestPersonRequest{
+			PersonName: pName,
+			Category:   cat,
+			Country:    cnt,
+			FocusAngle: ang,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"discoveryId":    res.DiscoveryID,
+			"personId":       res.PersonID,
+			"personName":     res.PersonName,
+			"alreadyExisted": res.AlreadyExisted,
+		}, nil
 	})
 	queue.GlobalQueue.Register("trend_monitoring_cycle", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
 		n, err := RunTrendMonitoringCycle(ctx)

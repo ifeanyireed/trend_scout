@@ -800,10 +800,10 @@ func ExtractCandidatesWithGemini(ctx context.Context, items []RawSignalInput) (m
 
 	itemsJSON, _ := json.Marshal(items)
 	sysPrompt := `You are TrendScout Studio's Lead Documentary Discovery Intelligence AI.
-Given a list of live news, Reddit, and Google Trends headlines, identify ONLY real individual human beings (athletes, prodigies, innovators, competitors, creators, or everyday heroes) who achieved a notable breakthrough, record, comeback, or underdog milestone.
+Given a list of live news, Reddit, and Google Trends headlines, identify real individual human beings (founders, CEOs, scientists, engineers, athletes, prodigies, innovators, creators, or everyday heroes) who are trending or achieved a notable breakthrough, milestone, record, comeback, or underdog story.
 CRITICAL RULES:
-- Never extract team names, country names, cities, companies, or generic phrases as a personName.
-- If an item does not mention a specific real individual person by first and last name, set "isRealPerson": false.
+- Never return a company name, team name, country, or city as personName. Always return the human individual's full canonical name (e.g., if a headline is about Nvidia's CEO or Nvidia's AI keynote/breakthrough, resolve the human subject as "Jensen Huang").
+- If an item is purely about a macro event, weather, or an organization with no identifiable individual human leader/subject, set "isRealPerson": false.
 - Return a JSON object with a "candidates" array matching the schema.`
 
 	userPrompt := fmt.Sprintf(`Analyze these live items and return JSON matching:

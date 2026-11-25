@@ -3,7 +3,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
   Archive, Compass, Flame, Sparkles, Trophy, Bookmark, BookOpen, Film, Clapperboard,
   Bell, FileSpreadsheet, Settings, Activity, LayoutDashboard, LogOut, RefreshCw,
-  ChevronLeft, ChevronRight, Search, X, Sun, Moon, ShieldCheck
+  ChevronLeft, ChevronRight, Search, X, Sun, Moon, ShieldCheck, UserPlus, ArrowRight
 } from 'lucide-react';
 import { apiFetch, clearAuthSession, getAuthUser, getSessionRemainingMs } from '../api/client';
 
@@ -34,6 +34,13 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [searchQuery, setSearchQuery] = useState('');
   const [scanning, setScanning] = useState(false);
   const [scanBanner, setScanBanner] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [suggestModalOpen, setSuggestModalOpen] = useState(false);
+  const [suggestName, setSuggestName] = useState('');
+  const [suggestAngle, setSuggestAngle] = useState('');
+  const [suggestCategory, setSuggestCategory] = useState('auto');
+  const [suggestCountry, setSuggestCountry] = useState('');
+  const [suggestBusy, setSuggestBusy] = useState(false);
+  const [suggestError, setSuggestError] = useState('');
   const [isDark, setIsDark] = useState(() => localStorage.getItem('ts_theme') === 'dark');
   const [sessionLabel, setSessionLabel] = useState('');
   const authUser = getAuthUser();
@@ -110,12 +117,69 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     }
   };
 
-  // Allow pages (e.g. empty-state CTAs) to trigger the live discovery scan bar
+  // Allow pages (e.g. empty-state CTAs) to trigger the live discovery scan bar or Suggest a Person modal
   useEffect(() => {
     const onTrigger = () => handleScanNow(false);
+    const onOpenSuggest = (e: Event) => {
+      const custom = e as CustomEvent;
+      if (custom?.detail?.personName) {
+        setSuggestName(String(custom.detail.personName));
+      }
+      if (custom?.detail?.focusAngle) {
+        setSuggestAngle(String(custom.detail.focusAngle));
+      }
+      setSuggestError('');
+      setSuggestModalOpen(true);
+    };
     window.addEventListener('ts-trigger-scan', onTrigger);
-    return () => window.removeEventListener('ts-trigger-scan', onTrigger);
+    window.addEventListener('ts-open-suggest-person', onOpenSuggest);
+    return () => {
+      window.removeEventListener('ts-trigger-scan', onTrigger);
+      window.removeEventListener('ts-open-suggest-person', onOpenSuggest);
+    };
   }, []);
+
+  const handleSuggestPersonSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = suggestName.trim();
+    if (!cleanName) {
+      setSuggestError('Please enter the name of the person you want to scout.');
+      return;
+    }
+    setSuggestBusy(true);
+    setSuggestError('');
+    try {
+      const res = await apiFetch('/api/discoveries/suggest', {
+        method: 'POST',
+        body: JSON.stringify({
+          personName: cleanName,
+          focusAngle: suggestAngle.trim(),
+          category: suggestCategory === 'auto' ? '' : suggestCategory,
+          country: suggestCountry.trim(),
+        }),
+      });
+      window.dispatchEvent(new CustomEvent('ts-refresh'));
+      setSuggestModalOpen(false);
+      setSuggestName('');
+      setSuggestAngle('');
+      setSuggestCategory('auto');
+      setSuggestCountry('');
+      const src = res?.sourcesScanned || {};
+      const sec = res?.durationMs ? (res.durationMs / 1000).toFixed(1) : '0';
+      setScanBanner({
+        type: 'success',
+        message: `Pulled opportunity for ${res.personName || cleanName} in ${sec}s (News: ${src['src-google-news'] ?? 0}, YouTube: ${src['src-youtube'] ?? 0}, Reddit: ${src['src-reddit'] ?? 0}, Wikipedia: ${src['src-wikipedia'] ?? 0}).`,
+      });
+      setTimeout(() => setScanBanner(null), 8000);
+      if (res?.discoveryId) {
+        navigate(`/opportunities/${res.discoveryId}`);
+      }
+    } catch (err: any) {
+      setSuggestError(err?.message || 'Failed to scout and pull opportunity for this person.');
+    } finally {
+      setSuggestBusy(false);
+    }
+  };
 
   // Automatic live freshness check: if database is empty or last scan is > 30 mins old, sync live sources once per session
   useEffect(() => {
@@ -162,6 +226,16 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         </div>
 
         <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => {
+              setSuggestError('');
+              setSuggestModalOpen(true);
+            }}
+            className="px-2.5 py-1 rounded-full border border-nexa-brand/40 bg-nexa-brand/10 text-nexa-brand text-[10px] font-extrabold flex items-center gap-1"
+          >
+            <UserPlus className="w-3 h-3" />
+            Suggest
+          </button>
           <button
             onClick={() => handleScanNow(false)}
             disabled={scanning}
@@ -257,16 +331,41 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 <RefreshCw className={`w-3.5 h-3.5 ${scanning ? 'animate-spin' : ''}`} />
                 <span>{scanning ? 'Scanning Live Sources...' : 'Run Discovery Scan Now'}</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSuggestError('');
+                  setSuggestModalOpen(true);
+                }}
+                className="w-full py-2 px-4 rounded-full border border-nexa-brand/40 bg-nexa-brand/10 hover:bg-nexa-brand hover:text-white text-nexa-brand font-extrabold text-xs flex items-center justify-center gap-2 transition cursor-pointer"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Suggest a Person to Scout</span>
+              </button>
             </>
           ) : (
-            <button
-              onClick={() => handleScanNow(false)}
-              disabled={scanning}
-              title="Run Discovery Scan Now"
-              className="w-10 h-10 mx-auto rounded-full bg-nexa-brand text-white flex items-center justify-center shadow-md shadow-nexa-brand/20 cursor-pointer"
-            >
-              <RefreshCw className={`w-4 h-4 ${scanning ? 'animate-spin' : ''}`} />
-            </button>
+            <div className="space-y-2 flex flex-col items-center">
+              <button
+                onClick={() => handleScanNow(false)}
+                disabled={scanning}
+                title="Run Discovery Scan Now"
+                className="w-10 h-10 mx-auto rounded-full bg-nexa-brand text-white flex items-center justify-center shadow-md shadow-nexa-brand/20 cursor-pointer"
+              >
+                <RefreshCw className={`w-4 h-4 ${scanning ? 'animate-spin' : ''}`} />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSuggestError('');
+                  setSuggestModalOpen(true);
+                }}
+                title="Suggest a Person & Pull Opportunity"
+                className="w-10 h-10 mx-auto rounded-full border border-nexa-brand/40 bg-nexa-brand/10 text-nexa-brand hover:bg-nexa-brand hover:text-white flex items-center justify-center transition cursor-pointer"
+              >
+                <UserPlus className="w-4 h-4" />
+              </button>
+            </div>
           )}
         </div>
 
@@ -422,6 +521,157 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           {children}
         </div>
       </main>
+
+      {/* SUGGEST A PERSON & PULL OPPORTUNITY MODAL */}
+      {suggestModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => !suggestBusy && setSuggestModalOpen(false)}
+        >
+          <div
+            className="nexa-card rounded-3xl border border-nexa-border max-w-lg w-full p-6 sm:p-7 shadow-2xl space-y-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-nexa-brand/10 border border-nexa-brand/25 text-nexa-brand flex items-center justify-center shrink-0">
+                  <UserPlus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-black text-display text-nexa-text-primary">
+                    Suggest a Person &amp; Pull Opportunity
+                  </h2>
+                  <p className="text-xs text-nexa-text-secondary">
+                    The system goes out across Wikipedia, Google News, YouTube &amp; Reddit to pull and score the full documentary opportunity.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={suggestBusy}
+                onClick={() => setSuggestModalOpen(false)}
+                className="p-1.5 rounded-full border border-nexa-border text-nexa-text-muted hover:text-nexa-text-primary cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {suggestError && (
+              <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs font-bold text-rose-500">
+                {suggestError}
+              </div>
+            )}
+
+            <form onSubmit={handleSuggestPersonSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-extrabold uppercase tracking-wider text-nexa-text-secondary mb-1.5">
+                  Person Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  disabled={suggestBusy}
+                  placeholder="e.g., Katalin Karikó, Jensen Huang, Lamine Yamal, Demis Hassabis..."
+                  value={suggestName}
+                  onChange={(e) => setSuggestName(e.target.value)}
+                  className="w-full px-4 py-3 rounded-2xl border border-nexa-border bg-nexa-bg-base text-sm text-nexa-text-primary outline-none focus:border-nexa-brand transition font-semibold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-extrabold uppercase tracking-wider text-nexa-text-secondary mb-1.5">
+                  Documentary Angle / Focus (Optional)
+                </label>
+                <input
+                  type="text"
+                  disabled={suggestBusy}
+                  placeholder="e.g., Underdog origin story, early rejections, world record breakthrough..."
+                  value={suggestAngle}
+                  onChange={(e) => setSuggestAngle(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary outline-none focus:border-nexa-brand transition"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-extrabold uppercase tracking-wider text-nexa-text-secondary mb-1.5">
+                    Category
+                  </label>
+                  <select
+                    disabled={suggestBusy}
+                    value={suggestCategory}
+                    onChange={(e) => setSuggestCategory(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary font-bold outline-none focus:border-nexa-brand"
+                  >
+                    <option value="auto">Auto-Detect from Live Sources</option>
+                    <option value="Science & Medicine">Science &amp; Medicine</option>
+                    <option value="Technology & Innovation">Technology &amp; Innovation</option>
+                    <option value="Business & Founders">Business &amp; Founders</option>
+                    <option value="Arts, Film & Music">Arts, Film &amp; Music</option>
+                    <option value="Humanitarian & Civic Impact">Humanitarian &amp; Civic Impact</option>
+                    <option value="Sports & Competition">Sports &amp; Competition</option>
+                    <option value="Mind Sports & Chess">Mind Sports &amp; Chess</option>
+                    <option value="Exploration & Survival">Exploration &amp; Survival</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-extrabold uppercase tracking-wider text-nexa-text-secondary mb-1.5">
+                    Country / Region (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    disabled={suggestBusy}
+                    placeholder="Auto-Detect (or e.g. United States)"
+                    value={suggestCountry}
+                    onChange={(e) => setSuggestCountry(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-base text-xs text-nexa-text-primary outline-none focus:border-nexa-brand"
+                  />
+                </div>
+              </div>
+
+              {suggestBusy && (
+                <div className="p-3.5 rounded-2xl bg-nexa-brand/10 border border-nexa-brand/25 text-xs text-nexa-brand font-bold flex items-center gap-2.5">
+                  <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                  <span>
+                    Scouting Wikipedia, Google News RSS, YouTube velocity &amp; channel baselines, Reddit discussions, and scoring 8 underdog dimensions...
+                  </span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  disabled={suggestBusy}
+                  onClick={() => setSuggestModalOpen(false)}
+                  className="px-4 py-2.5 rounded-full border border-nexa-border text-xs font-bold text-nexa-text-secondary hover:text-nexa-text-primary cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={suggestBusy}
+                  className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid disabled:opacity-60 text-white text-xs font-extrabold flex items-center gap-2 shadow-lg shadow-nexa-brand/25 cursor-pointer"
+                >
+                  {suggestBusy ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Pulling Live Opportunity...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Scout &amp; Pull Opportunity</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* MOBILE BOTTOM PILL BAR */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-50 bg-nexa-bg-surface/95 backdrop-blur-md border-t border-nexa-border shadow-2xl">

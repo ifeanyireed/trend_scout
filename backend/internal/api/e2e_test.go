@@ -151,6 +151,23 @@ func TestEndToEndTrendScoutPipeline(t *testing.T) {
 		t.Fatalf("Expected ok=true from /api/discoveries/scan, got %+v", scanData)
 	}
 
+	// 3B. Verify Suggest a Person & Pull Opportunity Endpoint (/api/discoveries/suggest)
+	suggestBody, _ := json.Marshal(map[string]any{
+		"personName": "Katalin Karikó",
+		"focusAngle": "Decades of rejected mRNA grant applications before winning the Nobel Prize",
+		"category":   "Science & Medicine",
+	})
+	suggestResp := authRequest(t, http.MethodPost, server.URL+"/api/discoveries/suggest", authRes.Token, suggestBody)
+	if suggestResp.StatusCode != 200 {
+		t.Fatalf("Suggest person endpoint failed: status=%d", suggestResp.StatusCode)
+	}
+	var suggestData map[string]any
+	_ = json.NewDecoder(suggestResp.Body).Decode(&suggestData)
+	suggestResp.Body.Close()
+	if okVal, _ := suggestData["ok"].(bool); !okVal || suggestData["discoveryId"] == nil || suggestData["discoveryId"] == "" {
+		t.Fatalf("Expected ok=true and discoveryId from /api/discoveries/suggest, got %+v", suggestData)
+	}
+
 	// 4. Test Chrome Extension Summary Endpoint (Authenticated)
 	extResp := authRequest(t, http.MethodGet, server.URL+"/api/extension/summary", authRes.Token, nil)
 	if extResp.StatusCode != 200 {

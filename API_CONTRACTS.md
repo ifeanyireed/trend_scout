@@ -16,6 +16,7 @@ All API routes are prefixed with `/api` and return JSON. Authenticated routes ac
 - `GET /api/discoveries` — Query parameters: `stage`, `underdogClass`, `minScore`, `category`, `search`, `sort`. Returns list of discoveries joined with person, event, latest trend observation, underdog assessment, and 8-dimension opportunity score.
 - `GET /api/discoveries/:id` — Full opportunity report including person biography, aliases, event details, trend observation history, videos, social posts, news articles, research claims, timeline, underdog assessment, and opportunity score rationale.
 - `POST /api/discoveries/scan` — Enqueue and/or immediately trigger a live multi-source discovery run across enabled connectors.
+- `POST /api/discoveries/suggest` — Suggest a specific person (`{ personName, focusAngle, category, country }`) and trigger a targeted multi-platform scout across Wikipedia, Google News RSS, YouTube, and Reddit to pull, score, and verify the documentary opportunity.
 - `POST /api/discoveries/:id/approve` — Approve an opportunity for documentary development and create/open its `documentary_projects` record.
 
 ## 4. Watchlist (`/api/watchlist`)

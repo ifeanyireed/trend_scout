@@ -535,6 +535,72 @@ func RegisterRoutes(mux *http.ServeMux) {
 		runLiveScanHandler(w, r, "manual")
 	}))
 
+	mux.HandleFunc("/api/discoveries/suggest", requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var req agents.SuggestPersonRequest
+		if err := readJSON(r, &req); err != nil || strings.TrimSpace(req.PersonName) == "" {
+			writeJSON(w, 400, map[string]string{"error": "personName is required"})
+			return
+		}
+
+		scoutCtx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+		defer cancel()
+
+		jobID := "job-" + uuid.NewString()
+		payloadBytes, _ := json.Marshal(req)
+		_, _ = db.DB.ExecContext(scoutCtx, `
+			INSERT INTO background_jobs (id, job_type, queue_name, priority, payload_json, status, attempts, max_attempts, started_at, heartbeat_at)
+			VALUES ($1, 'person_scout', 'live', 10, $2, 'running', 1, 1, NOW(), NOW())
+		`, jobID, string(payloadBytes))
+
+		res, err := agents.ScoutSuggestedPerson(scoutCtx, req)
+		if err != nil {
+			_, _ = db.DB.ExecContext(context.Background(), `
+				UPDATE background_jobs SET status = 'dead_letter', error_message = $2, completed_at = NOW(), updated_at = NOW() WHERE id = $1
+			`, jobID, err.Error())
+			writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error(), "jobId": jobID})
+			return
+		}
+
+		detail, _ := getDiscoveryDetail(scoutCtx, res.DiscoveryID)
+
+		summary := map[string]any{
+			"ok":             true,
+			"jobId":          jobID,
+			"discoveryId":    res.DiscoveryID,
+			"personId":       res.PersonID,
+			"personName":     res.PersonName,
+			"headline":       res.Headline,
+			"achievement":    res.Achievement,
+			"category":       res.Category,
+			"country":        res.Country,
+			"trendStage":     res.TrendStage,
+			"alreadyExisted": res.AlreadyExisted,
+			"sourcesScanned": res.SourcesScanned,
+			"usedGemini":     res.UsedGemini,
+			"durationMs":     res.DurationMs,
+			"discovery":      detail,
+			"scoutedAt":      time.Now().UTC().Format(time.RFC3339),
+		}
+		resBytes, _ := json.Marshal(map[string]any{
+			"ok":             true,
+			"discoveryId":    res.DiscoveryID,
+			"personId":       res.PersonID,
+			"personName":     res.PersonName,
+			"alreadyExisted": res.AlreadyExisted,
+			"sourcesScanned": res.SourcesScanned,
+			"durationMs":     res.DurationMs,
+		})
+		_, _ = db.DB.ExecContext(context.Background(), `
+			UPDATE background_jobs SET status = 'completed', result_json = $2, error_message = NULL, completed_at = NOW(), updated_at = NOW() WHERE id = $1
+		`, jobID, string(resBytes))
+
+		writeJSON(w, 200, summary)
+	}))
+
 	// Vercel Cron & Scheduled Live Discovery Endpoint (supports GET for Vercel Cron and POST)
 	mux.HandleFunc("/api/cron/discovery", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {

@@ -179,45 +179,8 @@ func isLikelyHumanBio(title, desc, extract string) bool {
 	}
 
 	combined := strings.ToLower(desc + " " + extract)
-	nonHumanMarkers := []string{
-		"is a professional sports team",
-		"is a football club",
-		"is a basketball team",
-		"is a baseball team",
-		"is a public ",
-		"is a private ",
-		"is a university",
-		"is a college",
-		"is an annual",
-		"is a tournament",
-		"is a championship",
-		"is a competition",
-		"is a festival",
-		"is a stadium",
-		"is a city in",
-		"is a town in",
-		"is a country in",
-		"is a state in",
-		"is a province",
-		"is a television series",
-		"is a video game",
-		"is a company",
-		"is a corporation",
-		"is a brand",
-		"is a film",
-		"is an album",
-		"is a song",
-		"is a novel",
-		"is a book",
-		"is an organization",
-		"is an organisation",
-		"may refer to",
-		"disambiguation",
-	}
-	for _, bad := range nonHumanMarkers {
-		if strings.Contains(combined, bad) {
-			return false
-		}
+	if strings.Contains(combined, "may refer to") || strings.Contains(combined, "disambiguation") {
+		return false
 	}
 
 	// Strong biographical proof: birth date/year or explicit individual profession across all domains
@@ -226,10 +189,10 @@ func isLikelyHumanBio(title, desc, extract string) bool {
 		// Science, Medicine & Tech
 		"scientist", "inventor", "researcher", "mathematician", "physicist", "chemist",
 		"biologist", "neuroscientist", "astronomer", "engineer", "programmer", "computer scientist",
-		"physician", "doctor", "surgeon", "professor", "educator", "economist", "architect",
+		"physician", "doctor", "surgeon", "professor", "educator", "economist", "architect", "technologist",
 		// Business & Founders
-		"entrepreneur", "founder", "co-founder", "businessperson", "businessman", "businesswoman",
-		"executive", "philanthropist", "investor", "industrialist",
+		"entrepreneur", "founder", "co-founder", "cofounder", "businessperson", "businessman", "businesswoman",
+		"chief executive", "ceo", "executive", "philanthropist", "investor", "industrialist", "billionaire", "chairman",
 		// Arts, Film, Music & Literature
 		"musician", "singer", "songwriter", "composer", "pianist", "violinist", "rapper",
 		"actor", "actress", "filmmaker", "director", "screenwriter", "producer",
@@ -244,12 +207,55 @@ func isLikelyHumanBio(title, desc, extract string) bool {
 		"fencer", "skier", "diver", "archer", "rower", "weightlifter", "surfer",
 		"coach", "badminton", "taekwondo", "javelin", "marathon",
 	}
+	if hasBirthMarker {
+		return true
+	}
+
+	nonHumanMarkers := []string{
+		"is a professional sports team",
+		"is a football club",
+		"is a basketball team",
+		"is a baseball team",
+		"is a public company",
+		"is a private company",
+		"is a public university",
+		"is a private university",
+		"is an annual",
+		"is a tournament",
+		"is a championship",
+		"is a competition",
+		"is a festival",
+		"is a stadium",
+		"is a city in",
+		"is a town in",
+		"is a country in",
+		"is a state in",
+		"is a province",
+		"is a television series",
+		"is a video game",
+		"is a multinational",
+		"is a corporation",
+		"is a brand",
+		"is an album by",
+		"is a song by",
+		"is a novel by",
+		"is a book by",
+		"is a film directed by",
+		"is an organization",
+		"is an organisation",
+	}
+	for _, bad := range nonHumanMarkers {
+		if strings.Contains(combined, bad) {
+			return false
+		}
+	}
+
 	for _, prof := range humanProfessions {
 		if strings.Contains(combined, prof) {
 			return true
 		}
 	}
-	return hasBirthMarker
+	return false
 }
 
 func inferCountryAndCategory(desc, extract string) (string, string) {
@@ -318,6 +324,43 @@ func inferCountryAndCategory(desc, extract string) (string, string) {
 }
 
 func FetchWikipediaProfile(ctx context.Context, subject string) (*WikiDeepProfile, error) {
+	prof, err := fetchWikipediaProfileDirect(ctx, subject)
+	if err == nil && prof != nil && prof.IsHuman {
+		return prof, nil
+	}
+	// Fallback: search Wikipedia API to handle lowercase input, spelling variations, or nicknames
+	client := &http.Client{Timeout: 5 * time.Second}
+	searchURL := fmt.Sprintf("https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=%s&srlimit=3&format=json", url.QueryEscape(strings.TrimSpace(subject)))
+	req, reqErr := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+	if reqErr == nil {
+		req.Header.Set("User-Agent", WikiUserAgent)
+		if resp, doErr := client.Do(req); doErr == nil {
+			var sRes struct {
+				Query struct {
+					Search []struct {
+						Title string `json:"title"`
+					} `json:"search"`
+				} `json:"query"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&sRes)
+			resp.Body.Close()
+			for _, hit := range sRes.Query.Search {
+				title := strings.TrimSpace(hit.Title)
+				if title == "" || strings.EqualFold(title, strings.TrimSpace(subject)) {
+					continue
+				}
+				if candidateProf, cErr := fetchWikipediaProfileDirect(ctx, title); cErr == nil && candidateProf != nil {
+					if candidateProf.IsHuman || prof == nil {
+						return candidateProf, nil
+					}
+				}
+			}
+		}
+	}
+	return prof, err
+}
+
+func fetchWikipediaProfileDirect(ctx context.Context, subject string) (*WikiDeepProfile, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	encoded := url.PathEscape(strings.ReplaceAll(strings.TrimSpace(subject), " ", "_"))
 	sumURL := fmt.Sprintf("https://en.wikipedia.org/api/rest_v1/page/summary/%s", encoded)
@@ -471,10 +514,11 @@ func DiscoverGoogleNews(ctx context.Context, queries []string) []DiscoveredCandi
 		}
 	} else {
 		dQueries = []domainQuery{
-			{query: `("breakthrough" OR "prize" OR "discovery") scientist OR inventor OR researcher when:7d`, category: "Science & Medicine"},
-			{query: `("bootstrapped" OR "self-made" OR "against all odds") founder OR entrepreneur when:7d`, category: "Business & Founders"},
+			{query: `("Jensen Huang" OR "Demis Hassabis" OR "Lisa Su" OR "CEO" OR "founder") (Nvidia OR AI OR semiconductor OR robotics OR quantum OR breakthrough) when:7d`, category: "Technology & Innovation"},
+			{query: `("breakthrough" OR "prize" OR "discovery" OR "Nobel") scientist OR inventor OR researcher when:7d`, category: "Science & Medicine"},
+			{query: `("founder" OR "entrepreneur" OR "CEO" OR "self-made" OR "bootstrapped") (record OR surge OR valuation OR milestone OR underdog) when:7d`, category: "Business & Founders"},
 			{query: `("breakout" OR "debut" OR "historic") filmmaker OR musician OR author OR artist when:7d`, category: "Arts, Film & Music"},
-			{query: `("youngest" OR "prodigy" OR "self-taught") inventor OR programmer OR engineer OR AI when:7d`, category: "Technology & Innovation"},
+			{query: `("youngest" OR "prodigy" OR "self-taught" OR "pioneer") inventor OR programmer OR engineer OR AI when:7d`, category: "Technology & Innovation"},
 			{query: `("humanitarian" OR "activist" OR "survived" OR "first ever") hero OR explorer OR pioneer when:7d`, category: "Humanitarian & Civic Impact"},
 			{query: `("underdog" OR "unseeded" OR "upset") champion athlete OR chess OR medalist when:7d`, category: "Sports & Competition"},
 		}
@@ -556,6 +600,143 @@ func DiscoverGoogleNews(ctx context.Context, queries []string) []DiscoveredCandi
 		}(dq)
 	}
 	wg.Wait()
+	return out
+}
+
+// SearchGoogleNewsForPerson queries Google News RSS specifically for a suggested person (plus optional angle/focus).
+func SearchGoogleNewsForPerson(ctx context.Context, personName string, focusAngle string) []DiscoveredCandidate {
+	cleanName := strings.TrimSpace(personName)
+	if cleanName == "" {
+		return nil
+	}
+	q := fmt.Sprintf(`"%s"`, cleanName)
+	if strings.TrimSpace(focusAngle) != "" {
+		q = fmt.Sprintf(`"%s" %s`, cleanName, strings.TrimSpace(focusAngle))
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	u := fmt.Sprintf("https://news.google.com/rss/search?q=%s&hl=en-US&gl=US&ceid=US:en", url.QueryEscape(q))
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	var feed rssFeed
+	if err := xml.Unmarshal(body, &feed); err != nil {
+		return nil
+	}
+	var out []DiscoveredCandidate
+	for i, item := range feed.Channel.Items {
+		if i >= 6 {
+			break
+		}
+		rawTitle := strings.TrimSpace(item.Title)
+		headline := rawTitle
+		publisher := strings.TrimSpace(item.Source)
+		if idx := strings.LastIndex(rawTitle, " - "); idx > 0 {
+			headline = strings.TrimSpace(rawTitle[:idx])
+			if publisher == "" {
+				publisher = strings.TrimSpace(rawTitle[idx+3:])
+			}
+		}
+		if publisher == "" {
+			publisher = "Google News"
+		}
+		eventDate := time.Now().Format("2006-01-02")
+		if t, err := time.Parse(time.RFC1123Z, item.PubDate); err == nil {
+			eventDate = t.Format("2006-01-02")
+		} else if t2, err2 := time.Parse(time.RFC1123, item.PubDate); err2 == nil {
+			eventDate = t2.Format("2006-01-02")
+		}
+		out = append(out, DiscoveredCandidate{
+			SourceID:    "src-google-news",
+			PersonName:  cleanName,
+			Category:    "Breakthrough & Human Interest",
+			Country:     "Global",
+			EventTitle:  headline,
+			EventDate:   eventDate,
+			Achievement: headline,
+			Headline:    headline,
+			SourceURL:   item.Link,
+			Publisher:   publisher,
+			Platform:    "News",
+			Summary:     fmt.Sprintf("Live coverage from %s: %s", publisher, headline),
+		})
+	}
+	return out
+}
+
+// SearchRedditForPerson queries public Reddit search JSON for discussions & breakout posts about a specific person.
+func SearchRedditForPerson(ctx context.Context, personName string) []SocialMetric {
+	cleanName := strings.TrimSpace(personName)
+	if cleanName == "" {
+		return nil
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	u := fmt.Sprintf("https://www.reddit.com/search.json?q=%s&sort=top&t=year&limit=5", url.QueryEscape(`"`+cleanName+`"`))
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", WikiUserAgent)
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+	var payload struct {
+		Data struct {
+			Children []struct {
+				Data struct {
+					ID          string  `json:"id"`
+					Title       string  `json:"title"`
+					Author      string  `json:"author"`
+					Subreddit   string  `json:"subreddit"`
+					Permalink   string  `json:"permalink"`
+					Ups         int64   `json:"ups"`
+					NumComments int64   `json:"num_comments"`
+					CreatedUTC  float64 `json:"created_utc"`
+				} `json:"data"`
+			} `json:"children"`
+		} `json:"data"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&payload)
+	resp.Body.Close()
+
+	var out []SocialMetric
+	for _, c := range payload.Data.Children {
+		p := c.Data
+		if p.Title == "" || p.Ups < 5 {
+			continue
+		}
+		dt := time.Unix(int64(p.CreatedUTC), 0).Format("2006-01-02")
+		ageHours := math.Max(1.0, time.Since(time.Unix(int64(p.CreatedUTC), 0)).Hours())
+		postURL := fmt.Sprintf("https://www.reddit.com%s", p.Permalink)
+		out = append(out, SocialMetric{
+			Platform:    "Reddit",
+			ExternalID:  "reddit-" + p.ID,
+			Author:      "u/" + p.Author,
+			Subreddit:   "r/" + p.Subreddit,
+			Content:     p.Title,
+			URL:         postURL,
+			Upvotes:     p.Ups,
+			Comments:    p.NumComments,
+			Shares:      0,
+			AgeHours:    ageHours,
+			PublishedAt: dt,
+		})
+	}
 	return out
 }
 

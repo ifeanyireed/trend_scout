@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Archive, ArchiveRestore, ArrowRight, AtSign, Bookmark, Compass, Copy, ExternalLink, Eye, EyeOff, Film, Flame, Hash, Lock,
-  MessageSquare, PlayCircle, RefreshCw, Save, Search, ShieldCheck, Sparkles, Tag, ThumbsUp, Trophy, TrendingUp, Activity, Bell, CheckCircle2, AlertCircle, Clock, Users
+  MessageSquare, PlayCircle, RefreshCw, Save, Search, ShieldCheck, Sparkles, Tag, ThumbsUp, Trophy, TrendingUp, Activity, Bell, CheckCircle2, AlertCircle, Clock, Users, UserPlus
 } from 'lucide-react';
 import { apiFetch, hasActiveSession, setAuthSession } from '../api/client';
 import { PaginationController } from '../components/PaginationController';
@@ -300,7 +300,15 @@ export const DashboardPage: React.FC = () => {
             </span>
           </p>
         </div>
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('ts-open-suggest-person'))}
+            className="px-4 py-2.5 rounded-full border border-nexa-brand/40 bg-nexa-brand/10 hover:bg-nexa-brand hover:text-white text-nexa-brand text-xs font-extrabold flex items-center gap-2 transition cursor-pointer"
+          >
+            <UserPlus className="w-4 h-4" />
+            Suggest a Person
+          </button>
           <button
             onClick={() => navigate('/production')}
             className="px-4 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold flex items-center gap-2 shadow-md shadow-nexa-brand/25 transition cursor-pointer"
@@ -506,6 +514,38 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
   const [archivedCount, setArchivedCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [quickPersonName, setQuickPersonName] = useState('');
+  const [quickFocusAngle, setQuickFocusAngle] = useState('');
+  const [quickScouting, setQuickScouting] = useState(false);
+  const [quickScoutError, setQuickScoutError] = useState<string | null>(null);
+
+  const handleQuickSuggestPerson = async (e?: React.FormEvent, overrideName?: string) => {
+    if (e) e.preventDefault();
+    const targetName = (overrideName ?? quickPersonName).trim();
+    if (!targetName) return;
+    setQuickScouting(true);
+    setQuickScoutError(null);
+    try {
+      const res = await apiFetch('/api/discoveries/suggest', {
+        method: 'POST',
+        body: JSON.stringify({
+          personName: targetName,
+          focusAngle: quickFocusAngle.trim(),
+        }),
+      });
+      setQuickPersonName('');
+      setQuickFocusAngle('');
+      load();
+      window.dispatchEvent(new CustomEvent('ts-refresh'));
+      if (res?.discoveryId) {
+        navigate(`/opportunities/${res.discoveryId}`);
+      }
+    } catch (err: any) {
+      setQuickScoutError(err?.message || 'Unable to pull opportunity for suggested person');
+    } finally {
+      setQuickScouting(false);
+    }
+  };
 
   const isArchivedView = mode === 'archived';
 
@@ -666,6 +706,81 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
         </div>
       </div>
 
+      {!isArchivedView && (
+        <div className="nexa-card rounded-3xl p-4 sm:p-5 border border-nexa-brand/25 bg-nexa-brand/5">
+          <form onSubmit={(e) => handleQuickSuggestPerson(e)} className="flex flex-col lg:flex-row lg:items-center gap-3">
+            <div className="flex items-center gap-2.5 shrink-0">
+              <div className="w-9 h-9 rounded-2xl bg-nexa-brand/15 text-nexa-brand flex items-center justify-center shrink-0">
+                <UserPlus className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-xs font-black text-display text-nexa-text-primary">
+                  Suggest a Person &amp; Pull Opportunity
+                </div>
+                <div className="text-[11px] text-nexa-text-secondary">
+                  Scouts Wikipedia, Google News, YouTube &amp; Reddit live
+                </div>
+              </div>
+            </div>
+
+            <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <input
+                type="text"
+                disabled={quickScouting}
+                placeholder="Enter person name (e.g., Katalin Karikó, Jensen Huang)..."
+                value={quickPersonName}
+                onChange={(e) => setQuickPersonName(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-surface text-xs font-semibold text-nexa-text-primary outline-none focus:border-nexa-brand"
+              />
+              <input
+                type="text"
+                disabled={quickScouting}
+                placeholder="Optional angle (e.g., underdog origin, record breakthrough)..."
+                value={quickFocusAngle}
+                onChange={(e) => setQuickFocusAngle(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-2xl border border-nexa-border bg-nexa-bg-surface text-xs text-nexa-text-primary outline-none focus:border-nexa-brand"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="submit"
+                disabled={quickScouting || !quickPersonName.trim()}
+                className="px-4 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid disabled:opacity-50 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-md shadow-nexa-brand/20 cursor-pointer whitespace-nowrap"
+              >
+                {quickScouting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Pulling Opportunity...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Pull Opportunity →</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent('ts-open-suggest-person', {
+                      detail: { personName: quickPersonName, focusAngle: quickFocusAngle },
+                    }),
+                  )
+                }
+                className="px-3 py-2.5 rounded-full border border-nexa-border bg-nexa-bg-surface hover:border-nexa-brand text-[11px] font-bold text-nexa-text-secondary hover:text-nexa-text-primary cursor-pointer whitespace-nowrap"
+              >
+                Advanced
+              </button>
+            </div>
+          </form>
+          {quickScoutError && (
+            <div className="mt-2.5 text-xs font-bold text-rose-500">{quickScoutError}</div>
+          )}
+        </div>
+      )}
+
       {loading && items.length === 0 ? (
         <div className="p-14 flex flex-col items-center justify-center space-y-3">
           <div className="w-8 h-8 rounded-full border-2 border-nexa-brand border-t-transparent animate-spin" />
@@ -708,12 +823,24 @@ export const DiscoveryFeedPage: React.FC<{ mode: 'discover' | 'trending' | 'emer
               Browse Active Discoveries →
             </button>
           ) : (
-            <button
-              onClick={() => window.dispatchEvent(new CustomEvent('ts-trigger-scan'))}
-              className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold shadow-md shadow-nexa-brand/25 cursor-pointer"
-            >
-              Run Live Discovery Scan Now →
-            </button>
+            <div className="flex items-center justify-center gap-2.5 flex-wrap">
+              {search.trim() && (
+                <button
+                  onClick={() => handleQuickSuggestPerson(undefined, search.trim())}
+                  disabled={quickScouting}
+                  className="px-5 py-2.5 rounded-full bg-nexa-brand hover:bg-nexa-brand-mid text-white text-xs font-extrabold shadow-md shadow-nexa-brand/25 cursor-pointer flex items-center gap-1.5"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>{quickScouting ? `Scouting ${search.trim()}...` : `Scout "${search.trim()}" & Pull Live Opportunity →`}</span>
+                </button>
+              )}
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('ts-trigger-scan'))}
+                className="px-5 py-2.5 rounded-full border border-nexa-border bg-nexa-bg-surface hover:border-nexa-brand text-nexa-text-primary text-xs font-extrabold cursor-pointer"
+              >
+                Run Live Discovery Scan Now →
+              </button>
+            </div>
           )}
         </div>
       ) : (

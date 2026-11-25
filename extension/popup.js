@@ -203,4 +203,59 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.textContent = 'Scan Now';
     }
   });
+
+  const suggestInput = document.getElementById('suggestPersonInput');
+  const suggestBtn = document.getElementById('suggestPersonBtn');
+  const suggestStatus = document.getElementById('suggestStatusLabel');
+
+  async function handleSuggestFromPopup() {
+    const personName = (suggestInput?.value || '').trim();
+    if (!personName) return;
+    suggestBtn.disabled = true;
+    suggestBtn.textContent = 'Pulling...';
+    if (suggestStatus) {
+      suggestStatus.style.display = 'block';
+      suggestStatus.style.color = '#6B7280';
+      suggestStatus.textContent = `Scouting Wikipedia, News, YouTube & Reddit for ${personName}...`;
+    }
+    try {
+      const resp = await authFetchPopup('/api/discoveries/suggest', {
+        method: 'POST',
+        body: JSON.stringify({ personName }),
+      });
+      const res = await resp.json().catch(() => ({}));
+      if (resp.ok && res.discoveryId) {
+        suggestInput.value = '';
+        if (suggestStatus) {
+          suggestStatus.style.color = '#0E9F6E';
+          suggestStatus.textContent = `Pulled opportunity for ${res.personName || personName}!`;
+        }
+        chrome.runtime.sendMessage({ type: 'POLL_NOW' }).catch(() => {});
+        await loadPopupData();
+      } else if (suggestStatus) {
+        suggestStatus.style.color = '#E02424';
+        suggestStatus.textContent = res.error || 'Failed to pull opportunity';
+      }
+    } catch (_) {
+      if (suggestStatus) {
+        suggestStatus.style.color = '#E02424';
+        suggestStatus.textContent = 'Unable to reach TrendScout backend';
+      }
+    } finally {
+      suggestBtn.disabled = false;
+      suggestBtn.textContent = 'Pull →';
+    }
+  }
+
+  if (suggestBtn) {
+    suggestBtn.addEventListener('click', handleSuggestFromPopup);
+  }
+  if (suggestInput) {
+    suggestInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleSuggestFromPopup();
+      }
+    });
+  }
 });

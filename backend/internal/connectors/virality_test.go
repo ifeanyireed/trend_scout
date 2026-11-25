@@ -173,3 +173,20 @@ func TestLiveWikidataSocialVerification(t *testing.T) {
 		t.Logf("VERIFIED OFFICIAL: %s (%s) [%s] YT=%q X=%q IG=%q", a.EntityName, a.EntityType, a.VerifiedBy, a.YouTubeHandle, a.TwitterHandle, a.InstagramHandle)
 	}
 }
+
+func TestIsLikelyHumanBioForFoundersAndFilmmakers(t *testing.T) {
+	jensenExtract := `Jen-Hsun "Jensen" Huang (born February 17, 1963) is a Taiwanese and American businessman, electrical engineer, and philanthropist who is the president, chief executive officer (CEO), and a co-founder of Nvidia, which is a public company and the world's largest semiconductor corporation.`
+	if !isLikelyHumanBio("Jensen Huang", "American businessman and CEO of Nvidia", jensenExtract) {
+		t.Fatalf("expected Jensen Huang to be recognized as a human biography despite mentioning 'is a public company' and 'corporation'")
+	}
+
+	filmmakerExtract := `Chloe Zhao is a filmmaker and director known for independent cinema.`
+	if !isLikelyHumanBio("Chloé Zhao", "Chinese-born filmmaker", filmmakerExtract) {
+		t.Fatalf("expected filmmaker biography to be recognized as human")
+	}
+
+	companyExtract := `Nvidia Corporation is a multinational technology company and corporation headquartered in Santa Clara, California.`
+	if isLikelyHumanBio("Nvidia", "American technology company", companyExtract) {
+		t.Fatalf("expected Nvidia Corporation to be rejected as non-human")
+	}
+}
